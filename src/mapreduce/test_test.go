@@ -105,13 +105,15 @@ func makeInputs(num int) []string {
 		if err != nil {
 			log.Fatal("mkInput: ", err)
 		}
+		debug("fun setup files f %d\n",f)
 		w := bufio.NewWriter(file)
 		for i < (f+1)*(nNumber/num) {
-			fmt.Fprintf(w, "%d\n", i)
+			//fmt.Fprintf(w, "%d\n", i)
 			i++
 		}
 		w.Flush()
 		file.Close()
+
 	}
 	return names
 }
@@ -126,13 +128,17 @@ func port(suffix string) string {
 	s += "mr"
 	s += strconv.Itoa(os.Getpid()) + "-"
 	s += suffix
+	debug("id:%s\n",s)
 	return s
 }
 
 func setup() *Master {
 	files := makeInputs(nMap)
+	//debug("fun setup files ok\n")
 	master := port("master")
+	//debug("fun setup port ok\n")
 	mr := Distributed("test", files, nReduce, master)
+	//debug("fun setup Distributed ok\n")
 	return mr
 }
 
@@ -169,6 +175,7 @@ func TestParallelBasic(t *testing.T) {
 	check(t, mr.files)
 	checkWorker(t, mr.stats)
 	cleanup(mr)
+
 }
 
 func TestParallelCheck(t *testing.T) {

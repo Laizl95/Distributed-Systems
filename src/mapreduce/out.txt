@@ -1,0 +1,8 @@
+=== RUN   TestParallelBasic
+2020/03/04 20:34:50 rpc.Register: method "CleanupFiles" has 1 input parameters; needs exactly three
+2020/03/04 20:34:50 rpc.Register: method "Lock" has 1 input parameters; needs exactly three
+2020/03/04 20:34:50 rpc.Register: method "Unlock" has 1 input parameters; needs exactly three
+2020/03/04 20:34:50 rpc.Register: method "Wait" has 1 input parameters; needs exactly three
+2020/03/04 20:34:50 RegstrationServer/var/tmp/824--1/mr2568-master error: listen unix /var/tmp/824--1/mr2568-master: bind: A socket operation encountered a dead network.
+exit status 1
+FAIL	mapreduce	0.500s

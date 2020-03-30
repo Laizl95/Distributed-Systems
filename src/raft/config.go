@@ -8,7 +8,10 @@ package raft
 // test with the original before submitting.
 //
 
-import "labrpc"
+import (
+	"labrpc"
+	"strconv"
+)
 import "log"
 import "sync"
 import "testing"
@@ -302,7 +305,8 @@ func (cfg *config) checkOneLeader() int {
 
 		leaders := make(map[int][]int)
 		for i := 0; i < cfg.n; i++ {
-			if cfg.connected[i] {
+			if cfg.connected[i] {// whether each server is on the net
+				fmt.Println(cfg.rafts[i].me," ",cfg.rafts[i].state," ",cfg.rafts[i].currentTerm)
 				if term, leader := cfg.rafts[i].GetState(); leader {
 					leaders[term] = append(leaders[term], i)
 				}
@@ -332,7 +336,8 @@ func (cfg *config) checkTerms() int {
 	term := -1
 	for i := 0; i < cfg.n; i++ {
 		if cfg.connected[i] {
-			xterm, _ := cfg.rafts[i].GetState()
+			xterm, ok := cfg.rafts[i].GetState()
+			fmt.Println("******info:",ok," ",cfg.rafts[i].state," ",xterm)
 			if term == -1 {
 				term = xterm
 			} else if term != xterm {
@@ -359,6 +364,7 @@ func (cfg *config) checkNoLeader() {
 func (cfg *config) nCommitted(index int) (int, interface{}) {
 	count := 0
 	cmd := -1
+	//DPrintf("Idenx="+strconv.Itoa(index))
 	for i := 0; i < len(cfg.rafts); i++ {
 		if cfg.applyErr[i] != "" {
 			cfg.t.Fatal(cfg.applyErr[i])
@@ -368,6 +374,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 		cmd1, ok := cfg.logs[i][index]
 		cfg.mu.Unlock()
 
+		DPrintf("CMD1="+strconv.Itoa(cmd1))
 		if ok {
 			if count > 0 && cmd != cmd1 {
 				cfg.t.Fatalf("committed values do not match: index %v, %v, %v\n",
@@ -439,19 +446,22 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 			cfg.mu.Unlock()
 			if rf != nil {
 				index1, _, ok := rf.Start(cmd)
+				//DPrintf("___________"+strconv.Itoa(index1))
 				if ok {
 					index = index1
 					break
 				}
 			}
 		}
-
+	//DPrintf("*******************"+strconv.Itoa(index))
 		if index != -1 {
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.
+			//DPrintf("******************saaaaaaaaaaa*"+strconv.Itoa(index))
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
+				//DPrintf("asfsfdsgggggggggg  "+strconv.Itoa(nd))
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					if cmd2, ok := cmd1.(int); ok && cmd2 == cmd {

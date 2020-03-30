@@ -1,7 +1,10 @@
 package mapreduce
 
 import (
+	"encoding/json"
+	"fmt"
 	"hash/fnv"
+	"os"
 )
 
 func doMap(
@@ -53,6 +56,42 @@ func doMap(
 	//
 	// Your code here (Part I).
 	//
+	file, err := os.Open(inFile)
+	if err == nil {
+		//fmt.Printf("file:%s opened\n",inFile)
+	} else {
+		fmt.Print(err)
+	}
+	inf, err := file.Stat() //returns the FileInfo structure describing file
+	contents := make([]byte,inf.Size())
+	file.Read(contents)
+	file.Close()
+
+	kv := mapF(inFile,string(contents))
+	filesenc := make([]*json.Encoder,nReduce)
+	files := make([]*os.File,nReduce)
+
+	for i := range filesenc {
+		file,err := os.Create(reduceName(jobName, mapTask, i))
+		if err != nil {
+			fmt.Printf("%s Create Failed\n",reduceName(jobName, mapTask, nReduce))
+
+		} else {
+			//fmt.Printf("%s Created\n",reduceName(jobName, mapTaskNumber, nReduce))
+			files[i]=file
+			filesenc[i] = json.NewEncoder(files[i])
+		}
+	}
+	//ihash(v.Key) % int(nReduce) 可能有多个key在一个reduce上
+	for _,v := range kv {
+		err := filesenc[ihash(v.Key) % int(nReduce)].Encode(&v)
+		if err != nil {
+			fmt.Printf("%s Encode Failed %v\n",v,err)
+		}
+	}
+	for _,f := range files {
+		f.Close()
+	}
 }
 
 func ihash(s string) int {

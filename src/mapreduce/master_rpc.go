@@ -22,8 +22,17 @@ func (mr *Master) startRPCServer() {
 	rpcs := rpc.NewServer()
 	rpcs.Register(mr)
 	os.Remove(mr.address) // only needed for "unix"
+	debug("1\n")//"unix"
+	// Examples:
+	//	Dial("ip4:1", "192.0.2.1")
+	//	Dial("ip6:ipv6-icmp", "2001:db8::1")
+	//	Dial("ip6:58", "fe80::1%lo0")
+   //192.168.73.1
 	l, e := net.Listen("unix", mr.address)
+	//l, e := net.Listen("tcp",  ":1234")
+	debug("2\n")
 	if e != nil {
+		debug("erroooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooor\n")
 		log.Fatal("RegstrationServer", mr.address, " error: ", e)
 	}
 	mr.l = l
@@ -45,7 +54,7 @@ func (mr *Master) startRPCServer() {
 					conn.Close()
 				}()
 			} else {
-				debug("RegistrationServer: accept error", err)
+				//debug("RegistrationServer: accept error", err)
 				break
 			}
 		}

@@ -104,7 +104,9 @@ func (mr *Master) forwardRegistrations(ch chan string) {
 // master over RPC.
 func Distributed(jobName string, files []string, nreduce int, master string) (mr *Master) {
 	mr = newMaster(master)
+	//debug("start PRCsever\n")
 	mr.startRPCServer()
+	//debug("finsh PRCsever\n")
 	go mr.run(jobName, files, nreduce,
 		func(phase jobPhase) {
 			ch := make(chan string)
@@ -138,8 +140,9 @@ func (mr *Master) run(jobName string, files []string, nreduce int,
 	mr.nReduce = nreduce
 
 	fmt.Printf("%s: Starting Map/Reduce task %s\n", mr.address, mr.jobName)
-
+	debug("%s: Starting Map/Reduce task\n",mr.address+mr.jobName)
 	schedule(mapPhase)
+	debug("mapPhase ok.\n")
 	schedule(reducePhase)
 	finish()
 	mr.merge()

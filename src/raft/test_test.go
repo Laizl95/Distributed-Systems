@@ -33,10 +33,11 @@ func TestInitialElection2A(t *testing.T) {
 	// election, then check that all peers agree on the term.
 	time.Sleep(50 * time.Millisecond)
 	term1 := cfg.checkTerms()
-
+	DPrintf("term1111111111")
 	// does the leader+term stay the same if there is no network failure?
 	time.Sleep(2 * RaftElectionTimeout)
 	term2 := cfg.checkTerms()
+	DPrintf("term2222222222222")
 	if term1 != term2 {
 		fmt.Printf("warning: term changed even though there were no failures")
 	}
@@ -59,12 +60,12 @@ func TestReElection2A(t *testing.T) {
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
-
+	fmt.Println("11111111111111111111111")
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader.
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
-
+	fmt.Println("22222222222222222222222")
 	// if there's no quorum, no leader should
 	// be elected.
 	cfg.disconnect(leader2)
@@ -74,10 +75,12 @@ func TestReElection2A(t *testing.T) {
 
 	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader2 + 1) % servers)
+	fmt.Println("3333333333333333333333333")
 	cfg.checkOneLeader()
 
 	// re-join of last node shouldn't prevent leader from existing.
 	cfg.connect(leader2)
+	fmt.Println("44444444444444444444444444")
 	cfg.checkOneLeader()
 
 	cfg.end()
@@ -112,13 +115,13 @@ func TestFailAgree2B(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): agreement despite follower disconnection")
-
+	fmt.Println("sssssssssssssssssssss")
 	cfg.one(101, servers, false)
-
+	fmt.Println("44444444444444444444444444")
 	// follower network disconnection
 	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 1) % servers)
-
+	fmt.Println("aaaaaaaaaaaaaaaaaaaa")
 	// agree despite one disconnected server?
 	cfg.one(102, servers-1, false)
 	cfg.one(103, servers-1, false)
@@ -295,7 +298,10 @@ func TestRejoin2B(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): rejoin of partitioned leader")
-
+	//leader a 添加日志101 follower添加该日志,a 添加日志102 103 104后下线
+	//新leader b 上线，添加日志103，follower添加该日志，然后下线
+	//此时旧leader a上线，添加日志104
+	//b上线，添加105
 	cfg.one(101, servers, true)
 
 	// leader network failure
