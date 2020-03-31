@@ -488,7 +488,7 @@ loop:
 		if failed {
 			continue loop
 		}
-
+		DPrintf("RPCs %d",total2-total1)
 		if total2-total1 > (iters+1+3)*3 {
 			t.Fatalf("too many RPCs (%v) for %v entries\n", total2-total1, iters)
 		}
