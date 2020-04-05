@@ -19,7 +19,7 @@ package raft
 
 import (
 	"bytes"
-	"encoding/gob"
+	"labgob"
 	"math/rand"
 	//"strconv"
 	"sync"
@@ -81,6 +81,7 @@ type Raft struct {
 	heartBeat chan bool
 	stateChange chan state
 	applyCh chan ApplyMsg
+	agreeVote chan bool
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -116,7 +117,7 @@ func (rf *Raft) persist() {
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
 	w := new(bytes.Buffer)
-	e := gob.NewEncoder(w)
+	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.voteFor)
 	e.Encode(rf.log)
@@ -145,19 +146,19 @@ func (rf *Raft) readPersist(data []byte) {
 	//   rf.xxx = xxx
 	//   rf.yyy = yyy
 	// }
-	rf.readPersist(rf.persister.ReadRaftState())
-	if len(data) == 0 {
-		return
-	}
+	//rf.readPersist(rf.persister.ReadRaftState())
 	r := bytes.NewBuffer(data)
-	d := gob.NewDecoder(r)
-	var LastIncludedIndex int
-	var LastIncludedTerm int
-	d.Decode(&LastIncludedIndex)
-	d.Decode(&LastIncludedTerm)
-	rf.commitIndex = LastIncludedIndex
-	rf.lastApplied = LastIncludedIndex
-	//rf.log = truncateLog(LastIncludedIndex, LastIncludedTerm, rf.log)
+	d := labgob.NewDecoder(r)
+	var currentTerm int
+	var votedFor int
+	var log []Log
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor)!=nil || d.Decode(&log) != nil {
+		DPrintf("Decode error")
+	}else{
+		rf.currentTerm = currentTerm
+		rf.voteFor = votedFor
+		rf.log = log
+	}
 	//msg := ApplyMsg{UseSnapshot: true, Snapshot: data}
 	//go func() {
 	//	rf.chanApply <- msg
@@ -256,6 +257,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if lastLog.Term < args.LastLogTerm {
 		rf.voteFor = args.CandidateId
 		reply.VoteGranted = true
+		rf.agreeVote <- true
+		rf.persist()
 		return
 	}
 	if lastLogId  > args.LastLogIndex {
@@ -263,6 +266,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 	rf.voteFor = args.CandidateId
 	reply.VoteGranted = true
+	rf.agreeVote <- true
+	rf.persist()
 	return
 }
 
@@ -305,7 +310,10 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply){
 				//可能旧的preLogIndex会传进来
 				if len(args.Entries) > args.PrevLogIndex {
 					rf.log = append(rf.log, args.Entries[args.PrevLogIndex])
+					rf.persist()
 				}
+				lastId,_ := rf.GetLastLogIno()
+				reply.LogIndex = lastId+1
 				//reply.LogIndex = lastId+1
 				//不能用args.LeaderCommit > rf.commitIndex,原因同下
 				minId := judge(&args.PrevLogIndex,&args.LeaderCommit)
@@ -319,24 +327,22 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply){
 			}else {
 				//需要优化减少rpc的次数
 				reply.LogIndex = lastId+1
-				//if  args.Entries[lastId].Term != lastTerm{
-				//	reply.LogIndex = lastId
-				//}
 				reply.Success = false
 			}
 
 			return
 		}
-		reply.Success = true
+
 		//follower有这条日志但是term不同,删除
 		//过最后一个test需要优化：找到当前term的第一个日志发送给leader
 		/*DPrintf("LogIndex %d Leader %d is LogTerm %d follower %d is LogTerm is %d",
 		args.PrevLogIndex,args.LeaderId, args.PrevLogTerm,rf.me,rf.log[args.PrevLogIndex].Term)*/
 		if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
-
 			term := rf.log[args.PrevLogIndex].Term
 			reply.Success=false
-			rf.log = rf.log[:args.PrevLogIndex]
+			//rf.log = rf.log[:args.PrevLogIndex]
+
+			//rf.persist()
 			reply.LogIndex = -1
 			for i := args.PrevLogIndex-1; i>=0 ; i-- {
 				if rf.log[i].Term == term {
@@ -350,21 +356,30 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply){
 
 		}
 		//优化 leader
-		/*lastId,_ = rf.GetLastLogIno()
-		reply.LogIndex = -1
+		lastId,_ = rf.GetLastLogIno()
+		reply.LogIndex = args.PrevLogIndex+1
+		reply.Success = true
 		for i:= args.PrevLogIndex ; i< len(args.Entries) ; i++ {
 			if lastId < i {
-				reply.LogIndex =i+1
+
+				for j:= i ; j< len(args.Entries) ; j++{
+					rf.log= append(rf.log,args.Entries[j])
+				}
+				rf.persist()
+				reply.LogIndex = len(args.Entries)
 				break
 			}
 			if rf.log[i].Term != args.Entries[i].Term {
-				reply.LogIndex = i+1
+				reply.Success =false
+				rf.log = rf.log[:i]
+				for j:= i ; j< len(args.Entries) ; j++{
+					rf.log= append(rf.log,args.Entries[j])
+				}
+				rf.persist()
+				reply.LogIndex = len(args.Entries)
 				break
 			}
 		}
-		if reply.LogIndex == -1 {
-			reply.LogIndex = len(args.Entries)
-		}*/
 		//rf.commitIndex = args.LeaderCommit
 		//不能用args.LeaderCommit > rf.commitIndex,原因同下
 
@@ -372,10 +387,11 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply){
 		////考虑旧的leader上线，新的leader心跳没有传过来，旧的leader抢了新日志
 		//leadercommit已经是最新,follower（old leader）抢了一条新日志长度和leader一样这时候出错
 		//注意prevLogIndex可能大于leadercommit,leadercommit不是最新
-		minId := judge(&args.PrevLogIndex,&args.LeaderCommit)
-		if minId > rf.commitIndex  {
+
+		//minId := judge(&args.PrevLogIndex,&args.LeaderCommit)
+		if args.LeaderCommit > rf.commitIndex  {
 			lastId,_ := rf.GetLastLogIno()
-			rf.commitIndex = judge(&lastId,&minId)
+			rf.commitIndex = judge(&lastId,&args.LeaderCommit)
 		}
 		if rf.lastApplied <= rf.commitIndex {
 			rf.ApplyStateMachine(rf.lastApplied,rf.commitIndex,rf.log)
@@ -484,34 +500,25 @@ func(rf *Raft) SendHeartBeat(){
 							//可能发送同一个prelogidenx多次都被拒绝
 							//rf.nextIndex[i]-=1
 							if append_reply.LogIndex == -1{
-							rf.nextIndex[i] = append_args.PrevLogIndex
+								rf.nextIndex[i] = append_args.PrevLogIndex
 							}else {
 								rf.nextIndex[i] = append_reply.LogIndex
 							}
 						}else {
 							//该日志在follower存在，更新matchIdenx
 							//bug：leader中nextIdenx目前没有日志
-							lens := len(append_args.Entries)
-							if rf.matchIndex[i] < append_args.PrevLogIndex  {
-								if append_args.PrevLogIndex < lens {
+							//lens := len(append_args.Entries)
+							/*if rf.matchIndex[i] < append_args.PrevLogIndex  {
+								if append_args.PrevLogIndex < lens  {
 									rf.matchIndex[i] = append_args.PrevLogIndex
 								}
 							}
 							//==lens的时候匹配完毕
 							if append_args.PrevLogIndex+1 < lens {
 								rf.nextIndex[i] = append_args.PrevLogIndex+2
-							}
-							//math > next
-							/*lens := len(append_args.Entries)
-							if rf.matchIndex[i] < append_reply.LogIndex-1 && rf.matchIndex[i]<rf.nextIndex[i] {
-								if append_args.PrevLogIndex-1 < lens && append_args.PrevLogIndex-1<rf.nextIndex[i] {
-									rf.matchIndex[i] = append_reply.LogIndex-1
-								}
-							}
-							if append_reply.LogIndex <= lens{
-								rf.nextIndex[i] = append_reply.LogIndex
 							}*/
-
+							rf.matchIndex[i] = append_reply.LogIndex-1
+							rf.nextIndex[i]=append_reply.LogIndex
 						}
 						//不能直接用rf.log更新
 						rf.UpdateCommitIndex(append_args)
@@ -641,6 +648,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		term = rf.currentTerm
 		index = len(rf.log)
 		rf.log = append(rf.log, info)
+		rf.persist()
 		rf.SendHeartBeat()
 		//rf.ConsistencyEntries()
 	}
@@ -687,7 +695,7 @@ func (rf *Raft) ChangeState(s state){
 
 		rf.state = s
 	}
-
+	rf.persist()
 }
 //
 // the service or tester wants to create a Raft server. the ports
@@ -723,6 +731,7 @@ func (rf *Raft) StartLeaderElection() {
 func (rf *Raft) StartFollower(){
 	//DPrintf("id:"+strconv.Itoa(rf.me)+","+string(rf.state)+" currenterm"+strconv.Itoa(rf.currentTerm))
 	select {
+	case <- rf.agreeVote:
 
 	case  <- rf.stateChange:
 		//DPrintf("follower %d changeState!!!!! ",rf.me)
@@ -796,7 +805,7 @@ func (rf *Raft) ApplyStateMachine(lastApplied,commitIndex int,log []Log) {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
-	rf.readPersist(persister.ReadRaftState())
+	//rf.readPersist(persister.ReadRaftState())
 	// Your initialization code here (2A, 2B, 2C).
 	// initialize from state persisted before a crash
 	rf.peers = peers
@@ -804,6 +813,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.heartBeat = make(chan bool,1000)
 	rf.stateChange = make(chan state,1000)
+	rf.agreeVote = make(chan bool,1000)
 	rf.state = follower
 	rf.currentTerm = 0
 	rf.voteFor = -1
@@ -814,6 +824,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex= make([]int,len(peers))
 	rf.matchIndex = make([]int,len(peers))
 	rf.applyCh = applyCh
+	rf.mu.Lock()
+	rf.readPersist(persister.ReadRaftState())
+	rf.mu.Unlock()
 	/*go func(){
 		for{
 			rf.ApplyStateMachine()
