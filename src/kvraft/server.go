@@ -22,6 +22,11 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Cid int64
+	Seq int32
+	Cmd string
+	Key string
+	Value string
 }
 
 type KVServer struct {
@@ -31,13 +36,17 @@ type KVServer struct {
 	applyCh chan raft.ApplyMsg
 
 	maxraftstate int // snapshot if log grows this big
-
 	// Your definitions here.
+	dp map[string]string
+	cidSep map[int64]int32
+	agreeChs map[int]Op
+
 }
 
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
