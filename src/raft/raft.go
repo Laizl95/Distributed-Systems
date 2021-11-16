@@ -20,11 +20,10 @@ package raft
 import (
 	"bytes"
 	"labgob"
+	"labrpc"
 	"math/rand"
-	"strconv"
 	"sync"
 	"time"
-	"labrpc"
 )
 
 //
@@ -82,7 +81,7 @@ type Raft struct {
 	// state a Raft server must maintain.
 }
 
-func (rf *Raft) GetLastLogIno() (int,int){
+func (rf *Raft) GetLastLogIno() (int,int) {
 	lastId := len(rf.log)-1
 	lastTerm := rf.log[lastId].Term
 	return lastId,lastTerm
@@ -193,7 +192,6 @@ type AppendEntryReply struct {
 	Term int
 	LogIndex int
 	Success bool
-
 }
 
 //
@@ -268,10 +266,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.persist()
 	return
 }
-func (rf *Raft) AppendEntry(args *AppendEntryArgs){
+func (rf *Raft) AppendEntry(args *AppendEntryArgs) {
 
 }
-func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply){
+func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 	//DPrintf("%s %d receive HeartBeat!!!!!!",rf.state,rf.me)
 	rf.mu.Lock()
 	defer  rf.mu.Unlock()
@@ -281,7 +279,7 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply){
 	if rf.currentTerm > args.Term  {
 		reply.Term = rf.currentTerm
 		reply.Success = false
-	}else{
+	}else {
 		if rf.state == candidate {
 			rf.ChangeState(follower)
 			rf.candidateChan <- struct{}{}
@@ -303,10 +301,14 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply){
 			}
 			return *a
 		}
-
-		//if args.PrevLogIndex == len(args.Entries)
+		DPrintf("LogIndex:%d Leader:%d is LogTerm:%d me:%d\n",
+			args.PrevLogIndex,args.LeaderId, args.PrevLogTerm,rf.me)
+		/*args.PrevLogIndex 当前leader想要同步的日志索引
+		  reply.LogIndex 检测到不同步的日志索引
+		 */
 		//当前follower还没有这条日志
 		if args.PrevLogIndex > lastId {
+			DPrintf("**************************\n")
 			//匹配到了最新
 			if args.PrevLogIndex == lastId+1 && args.Entries[lastId].Term == lastTerm {
 				reply.Success = true
@@ -314,13 +316,12 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply){
 				//DPrintf("Leader:"+strconv.Itoa(args.LeaderId))
 				//DPrintf("Leader is PrevLogIndex:"+strconv.Itoa(args.PrevLogIndex))
 				//可能旧的preLogIndex会传进来
-				if len(args.Entries) > args.PrevLogIndex {
-					rf.log = append(rf.log, args.Entries[args.PrevLogIndex])
-					rf.persist()
-				}
+				//if len(args.Entries) > args.PrevLogIndex {
+				rf.log = append(rf.log, args.Entries[args.PrevLogIndex])
+				rf.persist()
+				//}
 				lastId,_ := rf.GetLastLogIno()
 				reply.LogIndex = lastId+1
-				//reply.LogIndex = lastId+1
 				//不能用args.LeaderCommit > rf.commitIndex,原因同下
 				minId := judge(&args.PrevLogIndex,&args.LeaderCommit)
 				if minId > rf.commitIndex  {
@@ -328,10 +329,13 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply){
 					rf.commitIndex = judge(&lastId,&minId)
 				}
 				if rf.lastApplied <= rf.commitIndex {
-					rf.ApplyStateMachine(rf.lastApplied,rf.commitIndex,rf.log)
+					//.......
+					go rf.ApplyStateMachine(rf.lastApplied,rf.commitIndex,rf.log)
 				}
-			}else{
-				//需要优化减少rpc的次数
+			}else if args.PrevLogIndex == lastId+1 {
+				reply.LogIndex = lastId
+				reply.Success = false
+			}else {
 				reply.LogIndex = lastId+1
 				reply.Success = false
 			}
@@ -340,33 +344,30 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply){
 
 		//follower有这条日志但是term不同,删除
 		//过最后一个test需要优化：找到当前term的第一个日志发送给leader
-		/*DPrintf("LogIndex %d Leader %d is LogTerm %d follower %d is LogTerm is %d",
-		args.PrevLogIndex,args.LeaderId, args.PrevLogTerm,rf.me,rf.log[args.PrevLogIndex].Term)*/
+		DPrintf("LogIndex:%d Leader:%d is LogTerm:%d \n follower %d is LogTerm is %d",
+		args.PrevLogIndex,args.LeaderId, args.PrevLogTerm,rf.me,rf.log[args.PrevLogIndex].Term)
+
 		if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
 			term := rf.log[args.PrevLogIndex].Term
 			reply.Success=false
 			//rf.log = rf.log[:args.PrevLogIndex]
-
 			//rf.persist()
-			reply.LogIndex = -1
+			reply.LogIndex = args.PrevLogIndex
 			for i := args.PrevLogIndex-1; i>=0 ; i-- {
-				if rf.log[i].Term == term {
-					//reply.LogIndex = i
-				}else{
-					reply.LogIndex = i+1//+2
+				if rf.log[i].Term != term {
+					reply.LogIndex = i+1
 					break
 				}
 			}
 			return
-
 		}
+
 		//优化 leader
 		lastId,_ = rf.GetLastLogIno()
 		reply.LogIndex = args.PrevLogIndex+1
 		reply.Success = true
 		for i:= args.PrevLogIndex ; i< len(args.Entries) ; i++ {
 			if lastId < i {
-
 				for j:= i ; j< len(args.Entries) ; j++{
 					rf.log= append(rf.log,args.Entries[j])
 				}
@@ -384,22 +385,17 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply){
 				reply.LogIndex = len(args.Entries)
 				break
 			}
+			reply.LogIndex = i+1
 		}
-		//rf.commitIndex = args.LeaderCommit
-		//不能用args.LeaderCommit > rf.commitIndex,原因同下
 
-		//reply.LogIndex = args.PrevLogIndex+2
-		////考虑旧的leader上线，新的leader心跳没有传过来，旧的leader抢了新日志
-		//leadercommit已经是最新,follower（old leader）抢了一条新日志长度和leader一样这时候出错
 		//注意prevLogIndex可能大于leadercommit,leadercommit不是最新
-
 		//minId := judge(&args.PrevLogIndex,&args.LeaderCommit)
 		if args.LeaderCommit > rf.commitIndex  {
 			lastId,_ := rf.GetLastLogIno()
 			rf.commitIndex = judge(&lastId,&args.LeaderCommit)
 		}
 		if rf.lastApplied <= rf.commitIndex {
-			rf.ApplyStateMachine(rf.lastApplied,rf.commitIndex,rf.log)
+			go rf.ApplyStateMachine(rf.lastApplied,rf.commitIndex,rf.log)
 		}
 	}
 
@@ -407,22 +403,24 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply){
 
 
 func (rf *Raft) UpdateCommitIndex (args *AppendEntryArgs) {
-	//大多数的日志已经一致,更新commitedIndex
-	//commit的时候并不需要发给followers，提交就是回复client。
-	//leader只允许commit当前term的entry，其实是指积压着之前已经被majority认可的entry，
-	//直到当前term也被majority认可，然后统一commit。
-	//rf.mu.Lock()
-	if rf.state ==leader {
+
+	/*
+		大多数的日志已经一致,更新commitedIndex
+		leader只允许commit当前term的entry，其实是指积压着之前已经被majority认可的entry，
+		直到当前term也被majority认可，然后统一commit。
+	 */
+	rf.mu.Lock()
+	if rf.state == leader {
 		//DPrintf("*******************************************%d",len(args.Entries))
 		//DPrintf(string(rf.state)+" "+strconv.Itoa(rf.me)+" currentTerm:"+strconv.Itoa(rf.currentTerm)+"CommitInedx:"+strconv.Itoa(rf.commitIndex))
-		for i:=len(args.Entries)-1; i> rf.commitIndex ; i-- {
+		for i:=len(args.Entries)-1; i > rf.commitIndex; i-- {
 			//DPrintf("LogId: "+strconv.Itoa(i+1)+" LogTerm:"+strconv.Itoa(args.Entries[i].Term))
 			if args.Entries[i].Term == rf.currentTerm {
 				num :=1
 				for j := range rf.peers {
 					if j != rf.me {
 						//	DPrintf(strconv.Itoa(j)+":"+strconv.Itoa(rf.matchIndex[j]))
-						if rf.matchIndex[j] == i{
+						if rf.matchIndex[j] >= i{
 							num++
 						}
 					}
@@ -435,43 +433,25 @@ func (rf *Raft) UpdateCommitIndex (args *AppendEntryArgs) {
 			}
 		}
 		if rf.lastApplied <= rf.commitIndex {
-			rf.ApplyStateMachine(rf.lastApplied,rf.commitIndex,args.Entries)
+			go rf.ApplyStateMachine(rf.lastApplied,rf.commitIndex,args.Entries)
 		}
 	}
-	/*if rf.state ==leader {
-		DPrintf("*******************************************%d",len(rf.log))
-		DPrintf(string(rf.state)+" "+strconv.Itoa(rf.me)+" currentTerm:"+strconv.Itoa(rf.currentTerm)+"CommitInedx:"+strconv.Itoa(rf.commitIndex))
-		for i:=len(rf.log)-1; i> rf.commitIndex ; i-- {
-			DPrintf("LogId: "+strconv.Itoa(i+1)+" LogTerm:"+strconv.Itoa(rf.log[i].Term))
-			if rf.log[i].Term == rf.currentTerm {
-				num :=1
-				for j := range rf.peers {
-					if j != rf.me {
-						//	DPrintf(strconv.Itoa(j)+":"+strconv.Itoa(rf.matchIndex[j]))
-						if rf.matchIndex[j] == i{
-							num++
-						}
-					}
-				}
-				DPrintf("num="+strconv.Itoa(num)+" len="+strconv.Itoa(len(rf.peers)))
-				if num > len(rf.peers)/2 {
-					rf.commitIndex = i
-					break
-				}
-			}
-		}
-	}*/
-	//rf.mu.Unlock()
+	rf.mu.Unlock()
+
 }
 
 func(rf *Raft) SendHeartBeat() {
 
-	for i := range rf.peers{
-		if i != rf.me{
+	for i := range rf.peers {
+		if i != rf.me {
 			go func(i int){
 				rf.mu.Lock()
-
-				//DPrintf("---HeartBeat--------%s %d currentterm %d",rf.state,rf.me,rf.currentTerm)
+				if rf.state != leader {
+					rf.mu.Unlock()
+					return
+				}
+				//DPrintf("---HeartBeat--------%s %d currentterm %d send to follower %d\n",
+				//	rf.state,rf.me,rf.currentTerm,i)
 				preId := rf.nextIndex[i]-1
 				//DPrintf("check %d is preId is %d",i,preId)
 				//需要拷贝一个新日志，rpc是异步处理,日志可能会改变
@@ -494,22 +474,18 @@ func(rf *Raft) SendHeartBeat() {
 				rf.mu.Unlock()
 				ok := rf.peers[i].Call("Raft.HeartBeat",append_args,&append_reply)
 				rf.mu.Lock()
-				if ok && rf.state==leader{
-					if append_reply.Term > rf.currentTerm{
+				if ok && rf.state == leader {
+					if append_reply.Term > rf.currentTerm {
 						rf.currentTerm = append_reply.Term
 						if rf.state != follower {
 							rf.ChangeState(follower)
 							// 不需要rf.stateChange <- follower，因为leader没有重置时间片的必要
 						}
 					}else {
+						//DPrintf("Reply LogIndex %d\n",append_reply.LogIndex)
 						if !append_reply.Success {
-							//可能发送同一个prelogidenx多次都被拒绝
-							//rf.nextIndex[i]-=1
-							if append_reply.LogIndex == -1{
-								rf.nextIndex[i] = append_args.PrevLogIndex
-							}else {
-								rf.nextIndex[i] = append_reply.LogIndex
-							}
+							//出现-1的情况。。。。
+							rf.nextIndex[i] = append_reply.LogIndex
 						}else {
 							//该日志在follower存在，更新matchIdenx
 							//bug：leader中nextIdenx目前没有日志
@@ -527,7 +503,7 @@ func(rf *Raft) SendHeartBeat() {
 							rf.nextIndex[i]=append_reply.LogIndex
 						}
 						//不能直接用rf.log更新
-						rf.UpdateCommitIndex(append_args)
+						go rf.UpdateCommitIndex(append_args)
 					}
 				}
 				rf.mu.Unlock()
@@ -538,20 +514,24 @@ func(rf *Raft) SendHeartBeat() {
 
 func (rf *Raft)LeaderElection() {
 	// follower increments its current term and transitions to candidate state.
-	//It then votes for itself and issues RequestVote RPCs in parallel to each of
-	//the other servers in the cluster.
+	// It then votes for itself and issues RequestVote RPCs in parallel to each of
+	// the other servers in the cluster.
 	for i := range rf.peers	{
-		if i != rf.me{
+		if i != rf.me {
 			go func(i int) {
 				rf.mu.Lock()
+				if rf.state != candidate {
+					rf.mu.Unlock()
+					return
+				}
 				logIdenx,logTerm := rf.GetLastLogIno()
-				request_vote := &RequestVoteArgs{
+				request_vote := &RequestVoteArgs {
 					Term: rf.currentTerm,
 					CandidateId: rf.me,
 					LastLogTerm: logTerm,
 					LastLogIndex: logIdenx,
 				}
-				request_reply := RequestVoteReply{
+				request_reply := RequestVoteReply {
 					Term:        -1,
 					VoteGranted: false,
 				}
@@ -600,18 +580,18 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	if ok {
 		//DPrintf("Receive RequestVote RPC!!! %d currentterm %d",rf.me,rf.currentTerm)
 		rf.mu.Lock()
-		if reply.Term > rf.currentTerm{
+		if reply.Term > rf.currentTerm {
 			// 多个节点返回该信息，这时已经是follower的节点不能再收到这个信息了
 			// 可能之后收到的term更大，但是没有必要在这里更新了。可以由heartbeat或者new vote来更新term
 			if rf.state == candidate {
-				rf.candidateChan <- struct{}{}
 				rf.currentTerm = reply.Term
 				rf.ChangeState(follower)
+				rf.candidateChan <- struct{}{}
 				//rf.stateChange <- follower
 			}
-		}else if reply.VoteGranted && rf.state==candidate{
+		}else if reply.VoteGranted && rf.state==candidate {
 			rf.voteNum +=1
-			if rf.voteNum >= len(rf.peers)/2+1{
+			if rf.voteNum >= len(rf.peers)/2+1 {
 				// 和607的情况类似
 				if rf.state != leader {
 					//DPrintf("success new leader :"+strconv.Itoa(rf.me))
@@ -677,9 +657,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
 }
-func (rf *Raft) ChangeState(s state){
+func (rf *Raft) ChangeState(s state) {
 
-	if s== leader {
+	if s == leader {
 		rf.state =s
 		last_id,_ := rf.GetLastLogIno()
 		for i:= range rf.peers {
@@ -742,7 +722,7 @@ func (rf *Raft) StartLeaderElection() {
 			time.Duration(rand.Intn(200)+350) */
 
 		case <- rf.candidateChan:
-			DPrintf("Candidate statechange"+string(rf.state)+strconv.Itoa(rf.me))
+			DPrintf("Candidate change to %s ID:%d\n",string(rf.state),rf.me)
 		case <- rf.timer.C:   //time.After(time.Duration(rand.Int63() % 333 + 550) * time.Millisecond):
 			rf.mu.Lock()
 			rf.ChangeState(candidate)
@@ -751,7 +731,7 @@ func (rf *Raft) StartLeaderElection() {
 }
 
 
-func (rf *Raft) StartFollower(){
+func (rf *Raft) StartFollower() {
 	//DPrintf("id:"+strconv.Itoa(rf.me)+","+string(rf.state)+" currenterm"+strconv.Itoa(rf.currentTerm))
 	/*
 	    agreeVote 和 statechange是为了重置时间片,重置时间片直接Reset时间片就行了
@@ -789,7 +769,7 @@ func (rf *Raft) StartAppendEntry() {
 	}
 }
 
-func (rf *Raft) StartHeratBeat(){
+func (rf *Raft) StartHeratBeat() {
 	//DPrintf("id:"+strconv.Itoa(rf.me)+","+string(rf.state)+" currenterm"+strconv.Itoa(rf.currentTerm))
 	//The tester requires that the leader send heartbeat RPCs
 	//no more than ten times per second.
@@ -808,22 +788,25 @@ func (rf *Raft) StartHeratBeat(){
 }
 
 func (rf *Raft) ApplyStateMachine(lastApplied,commitIndex int,log []Log) {
-	//rf.mu.Lock()
-	//defer  rf.mu.Unlock()
-	for j:=lastApplied; j<=commitIndex ;j++{
-		DPrintf("%s %d at StateMachine LogIndex:%d Command:%d ",rf.state,rf.me,j+1,log[j].Command)
+	rf.mu.Lock()
+	defer  rf.mu.Unlock()
+	for j:=lastApplied+1; j<=commitIndex; j++ {
+		DPrintf("%s %d at StateMachine LogIndex:%d Command:%d ",rf.state,rf.me,j,log[j].Command)
 		if j==0 {
 			continue
 		}
-		rf.applyCh <- ApplyMsg{
+		rf.applyCh <- ApplyMsg {
 			CommandValid: true,
-			Command:      log[j].Command,
+			Command: log[j].Command,
 			CommandIndex: j,
 		}
 	}
-	if rf.lastApplied < commitIndex+1{
+	rf.lastApplied = commitIndex
+	/*
+	if rf.lastApplied < commitIndex+1 {
 		rf.lastApplied = commitIndex+1
 	}
+	*/
 }
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
@@ -834,9 +817,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	rf.heartBeat = make([]chan bool,len(peers))
-	rf.stateChange = make([]chan state,len(peers))
-	rf.agreeVote = make([]chan bool,len(peers))
+	//rf.heartBeat = make([]chan bool,len(peers))
+	//rf.stateChange = make([]chan state,len(peers))
+	//rf.agreeVote = make([]chan bool,len(peers))
 	rf.candidateChan = make(chan struct{})
 	rf.state = follower
 	rf.currentTerm = 0
@@ -865,8 +848,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		}
 	}()*/
 
-	go func(){
-		for{
+	go func() {
+		for {
 			/*DPrintf("\n")
 			DPrintf("%s %d CurrentTerm:%d CommitIndex:%d ",rf.state,rf.me,rf.currentTerm,rf.commitIndex)
 			for i:= range rf.log {
