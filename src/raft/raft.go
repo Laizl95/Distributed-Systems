@@ -301,9 +301,23 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 			}
 			return *a
 		}
+		/*
+			日志同步时不能随意截断日志，因为可能存在过时的RPC
+			不同leader的RPC：
+				1. old同步完，new同步
+					根据old leader的commitIndex提交没问题
+					这里截断没问题
+				2. new同步完，old RPC到达
+					因为term比old的大,直接拒绝
+			相同leader的RPC：
+				都是一样的日志，仅是长短不同，这时不能截断。
+				old RPC: len(log)
+				此时follower len > len(log),不能截断。
+		 */
 		DPrintf("LogIndex:%d Leader:%d is LogTerm:%d me:%d\n",
 			args.PrevLogIndex,args.LeaderId, args.PrevLogTerm,rf.me)
-		/*args.PrevLogIndex 当前leader想要同步的日志索引
+		/*
+			args.PrevLogIndex 当前leader想要同步的日志索引
 		  reply.LogIndex 检测到不同步的日志索引
 		 */
 		//当前follower还没有这条日志
@@ -330,7 +344,7 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 				}
 				if rf.lastApplied <= rf.commitIndex {
 					//.......
-					go rf.ApplyStateMachine(rf.lastApplied,rf.commitIndex,rf.log)
+					go rf.ApplyStateMachine(&rf.lastApplied,&rf.commitIndex,rf.log)
 				}
 			}else if args.PrevLogIndex == lastId+1 {
 				reply.LogIndex = lastId
@@ -338,6 +352,9 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 			}else {
 				reply.LogIndex = lastId+1
 				reply.Success = false
+			}
+			if reply.LogIndex <= 0 {
+				DPrintf("Stage 1 appear replyLogIndex <0\n")
 			}
 			return
 		}
@@ -358,6 +375,9 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 					reply.LogIndex = i+1
 					break
 				}
+			}
+			if reply.LogIndex <= 0 {
+				DPrintf("Stage 2 appear replyLogIndex <0\n")
 			}
 			return
 		}
@@ -387,6 +407,9 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 			}
 			reply.LogIndex = i+1
 		}
+		if reply.LogIndex <= 0 {
+			DPrintf("Stage 3 appear replyLogIndex <0\n")
+		}
 
 		//注意prevLogIndex可能大于leadercommit,leadercommit不是最新
 		//minId := judge(&args.PrevLogIndex,&args.LeaderCommit)
@@ -395,7 +418,7 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 			rf.commitIndex = judge(&lastId,&args.LeaderCommit)
 		}
 		if rf.lastApplied <= rf.commitIndex {
-			go rf.ApplyStateMachine(rf.lastApplied,rf.commitIndex,rf.log)
+			go rf.ApplyStateMachine(&rf.lastApplied,&rf.commitIndex,rf.log)
 		}
 	}
 
@@ -433,7 +456,7 @@ func (rf *Raft) UpdateCommitIndex (args *AppendEntryArgs) {
 			}
 		}
 		if rf.lastApplied <= rf.commitIndex {
-			go rf.ApplyStateMachine(rf.lastApplied,rf.commitIndex,args.Entries)
+			go rf.ApplyStateMachine(&rf.lastApplied,&rf.commitIndex,args.Entries)
 		}
 	}
 	rf.mu.Unlock()
@@ -453,6 +476,9 @@ func(rf *Raft) SendHeartBeat() {
 				//DPrintf("---HeartBeat--------%s %d currentterm %d send to follower %d\n",
 				//	rf.state,rf.me,rf.currentTerm,i)
 				preId := rf.nextIndex[i]-1
+				if preId < 0 {
+					DPrintf("*****preId=%d***** follower=%d***\n",preId,rf.me)
+				}
 				//DPrintf("check %d is preId is %d",i,preId)
 				//需要拷贝一个新日志，rpc是异步处理,日志可能会改变
 				preTerm := rf.log[preId].Term
@@ -483,24 +509,32 @@ func(rf *Raft) SendHeartBeat() {
 						}
 					}else {
 						//DPrintf("Reply LogIndex %d\n",append_reply.LogIndex)
+						/*
+							nextIndex[i]: leader当前需要同步follower i的日志索引
+							matchIndex[i]: leader当前确定已经同步的follower i的日志索引
+						 */
 						if !append_reply.Success {
-							//出现-1的情况。。。。
+							/*
+								Figure8Unreliable2C测试出现了返回-1的情况。。。。
+								猜测是leader发送appendRPC给follower i，然后leader转换为follower
+								之后该节点再次成为leader，当时follower j返回的RPC信息这时才回到leader，接着便进入该段代码
+							*/
 							rf.nextIndex[i] = append_reply.LogIndex
-						}else {
-							//该日志在follower存在，更新matchIdenx
-							//bug：leader中nextIdenx目前没有日志
-							//lens := len(append_args.Entries)
-							/*if rf.matchIndex[i] < append_args.PrevLogIndex  {
-								if append_args.PrevLogIndex < lens  {
-									rf.matchIndex[i] = append_args.PrevLogIndex
-								}
+							if rf.nextIndex[i] < 0 {
+								DPrintf("!!!nextIndex <0!!!!!\n")
 							}
-							//==lens的时候匹配完毕
-							if append_args.PrevLogIndex+1 < lens {
-								rf.nextIndex[i] = append_args.PrevLogIndex+2
-							}*/
-							rf.matchIndex[i] = append_reply.LogIndex-1
-							rf.nextIndex[i]=append_reply.LogIndex
+						}else {
+							// 同上要注意'旧'的RPC
+							/*
+							update matchIndex to be prevLogIndex + len(entries[])
+							*/
+							if rf.matchIndex[i] < append_reply.LogIndex-1 {
+								rf.matchIndex[i] = append_reply.LogIndex - 1
+								rf.nextIndex[i] = append_reply.LogIndex
+							}
+							if rf.nextIndex[i] < 0 {
+								DPrintf("nextIndex <0!!!!!\n")
+							}
 						}
 						//不能直接用rf.log更新
 						go rf.UpdateCommitIndex(append_args)
@@ -787,10 +821,11 @@ func (rf *Raft) StartHeratBeat() {
 	}
 }
 
-func (rf *Raft) ApplyStateMachine(lastApplied,commitIndex int,log []Log) {
+// 传参应该用指针，lastApplied和commitIndex是有可能会变的
+func (rf *Raft) ApplyStateMachine(lastApplied,commitIndex *int,log []Log) {
 	rf.mu.Lock()
 	defer  rf.mu.Unlock()
-	for j:=lastApplied+1; j<=commitIndex; j++ {
+	for j := *lastApplied+1; j <= *commitIndex; j++ {
 		DPrintf("%s %d at StateMachine LogIndex:%d Command:%d ",rf.state,rf.me,j,log[j].Command)
 		if j==0 {
 			continue
@@ -801,10 +836,10 @@ func (rf *Raft) ApplyStateMachine(lastApplied,commitIndex int,log []Log) {
 			CommandIndex: j,
 		}
 	}
-	rf.lastApplied = commitIndex
+	rf.lastApplied = *commitIndex
 	/*
-	if rf.lastApplied < commitIndex+1 {
-		rf.lastApplied = commitIndex+1
+	if rf.lastApplied < *commitIndex {
+		rf.lastApplied = *commitIndex
 	}
 	*/
 }
