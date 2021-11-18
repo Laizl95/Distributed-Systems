@@ -192,6 +192,7 @@ type AppendEntryReply struct {
 	Term int
 	LogIndex int
 	Success bool
+	ConflictTerm int
 }
 
 //
@@ -214,9 +215,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted=false
 	//Each server will vote for at most one candidate in a given term,
 	/*DPrintf("%s %d currentterm %d args  %d currentterm %d",
-		rf.state,rf.me,rf.currentTerm,args.CandidateId,args.Term)*/
+	rf.state,rf.me,rf.currentTerm,args.CandidateId,args.Term)*/
 
-    // 由于当选的leader需要最新的日志，所以即使当前节点已经投过票也需要再次比较follower是否有最新的日志
+	// 由于当选的leader需要最新的日志，所以即使当前节点已经投过票也需要再次比较follower是否有最新的日志
 	if args.Term == rf.currentTerm && rf.voteFor != -1 && rf.voteFor != args.CandidateId {
 		reply.Term = rf.currentTerm
 		return
@@ -273,9 +274,9 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 	//DPrintf("%s %d receive HeartBeat!!!!!!",rf.state,rf.me)
 	rf.mu.Lock()
 	defer  rf.mu.Unlock()
-    /*
-    	heartbeat 时为什么不需要比较最后一条日志的索引和log term？？
-     */
+	/*
+		heartbeat 时为什么不需要比较最后一条日志的索引和log term？？
+	*/
 	if rf.currentTerm > args.Term  {
 		reply.Term = rf.currentTerm
 		reply.Success = false
@@ -289,18 +290,14 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 			rf.currentTerm = args.Term
 			rf.ChangeState(follower)
 		}
-		rf.currentTerm=args.Term
+		rf.currentTerm = args.Term
+		reply.Term = args.Term
 		reply.Success = false
 		//DPrintf("%s %d has passed heartbeat",rf.state,rf.me)
 		//  rf.heartBeat <- true 修改为重置时间片即可
 		rf.ResetTimer()
-		lastId,lastTerm:= rf.GetLastLogIno()
-		judge :=func(a *int,b *int) int{
-			if *a > *b {
-				return *b
-			}
-			return *a
-		}
+		lastId,_ := rf.GetLastLogIno()
+
 		/*
 			日志同步时不能随意截断日志，因为可能存在过时的RPC
 			不同leader的RPC：
@@ -313,106 +310,99 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 				都是一样的日志，仅是长短不同，这时不能截断。
 				old RPC: len(log)
 				此时follower len > len(log),不能截断。
-		 */
+		*/
 		DPrintf("LogIndex:%d Leader:%d is LogTerm:%d me:%d\n",
 			args.PrevLogIndex,args.LeaderId, args.PrevLogTerm,rf.me)
 		/*
-			args.PrevLogIndex 当前leader想要同步的日志索引
-		  reply.LogIndex 检测到不同步的日志索引
-		 */
+				args.PrevLogIndex   leader想要同步的日志索引
+			  	reply.LogIndex 		follower想要同步的日志索引
+		*/
 		//当前follower还没有这条日志
 		if args.PrevLogIndex > lastId {
-			DPrintf("**************************\n")
-			//匹配到了最新
-			if args.PrevLogIndex == lastId+1 && args.Entries[lastId].Term == lastTerm {
-				reply.Success = true
-				//符合条件，该日志已经存在,考虑加入没有的日志
-				//DPrintf("Leader:"+strconv.Itoa(args.LeaderId))
-				//DPrintf("Leader is PrevLogIndex:"+strconv.Itoa(args.PrevLogIndex))
-				//可能旧的preLogIndex会传进来
-				//if len(args.Entries) > args.PrevLogIndex {
-				rf.log = append(rf.log, args.Entries[args.PrevLogIndex])
-				rf.persist()
-				//}
-				lastId,_ := rf.GetLastLogIno()
-				reply.LogIndex = lastId+1
-				//不能用args.LeaderCommit > rf.commitIndex,原因同下
-				minId := judge(&args.PrevLogIndex,&args.LeaderCommit)
-				if minId > rf.commitIndex  {
-					lastId,_ := rf.GetLastLogIno()
-					rf.commitIndex = judge(&lastId,&minId)
-				}
-				if rf.lastApplied <= rf.commitIndex {
-					//.......
-					go rf.ApplyStateMachine(&rf.lastApplied,&rf.commitIndex,rf.log)
-				}
-			}else if args.PrevLogIndex == lastId+1 {
-				reply.LogIndex = lastId
-				reply.Success = false
-			}else {
-				reply.LogIndex = lastId+1
-				reply.Success = false
-			}
-			if reply.LogIndex <= 0 {
-				DPrintf("Stage 1 appear replyLogIndex <0\n")
-			}
+			//DPrintf("**************************\n")
+			reply.LogIndex = lastId
+			reply.Success = false
+			reply.ConflictTerm = -1
 			return
 		}
 
 		//follower有这条日志但是term不同,删除
 		//过最后一个test需要优化：找到当前term的第一个日志发送给leader
 		DPrintf("LogIndex:%d Leader:%d is LogTerm:%d \n follower %d is LogTerm is %d",
-		args.PrevLogIndex,args.LeaderId, args.PrevLogTerm,rf.me,rf.log[args.PrevLogIndex].Term)
-
-		if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
-			term := rf.log[args.PrevLogIndex].Term
-			reply.Success=false
-			//rf.log = rf.log[:args.PrevLogIndex]
-			//rf.persist()
-			reply.LogIndex = args.PrevLogIndex
-			for i := args.PrevLogIndex-1; i>=0 ; i-- {
-				if rf.log[i].Term != term {
-					reply.LogIndex = i+1
-					break
-				}
+			args.PrevLogIndex,args.LeaderId, args.PrevLogTerm,rf.me,rf.log[args.PrevLogIndex].Term)
+		DPrintf("******PrevLogIndex=%d\n***********",args.PrevLogIndex)
+		if args.PrevLogIndex == 0 {
+			reply.Success = true
+			DPrintf("****Entries is len = %d******\n",len(args.Entries))
+			for i := 1; i < len(args.Entries); i++ {
+				rf.log = append(rf.log,args.Entries[i])
 			}
-			if reply.LogIndex <= 0 {
-				DPrintf("Stage 2 appear replyLogIndex <0\n")
-			}
+			rf.persist()
+			reply.LogIndex = len(rf.log)
 			return
 		}
-
-		//优化 leader
-		lastId,_ = rf.GetLastLogIno()
-		reply.LogIndex = args.PrevLogIndex+1
-		reply.Success = true
-		for i:= args.PrevLogIndex ; i< len(args.Entries) ; i++ {
-			if lastId < i {
-				for j:= i ; j< len(args.Entries) ; j++{
-					rf.log= append(rf.log,args.Entries[j])
+		if args.PrevLogTerm == -1  {
+			reply.Success = false
+			reply.ConflictTerm = -1
+			reply.LogIndex = args.PrevLogIndex-1
+		} else {
+			if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
+				DPrintf("((((((((((()))))))))))")
+				term := rf.log[args.PrevLogIndex].Term
+				reply.Success = false
+				reply.ConflictTerm = term
+				//reply.LogIndex = args.PrevLogIndex-1
+				//rf.log = rf.log[:args.PrevLogIndex]
+				//rf.persist()
+				for i := args.PrevLogIndex-1; i >= 0; i-- {
+					if i == 0 || rf.log[i].Term != term  {
+						reply.LogIndex = i + 1
+						break
+					}
 				}
-				rf.persist()
-				reply.LogIndex = len(args.Entries)
-				break
-			}
-			if rf.log[i].Term != args.Entries[i].Term {
-				reply.Success =false
-				rf.log = rf.log[:i]
-				for j:= i ; j< len(args.Entries) ; j++{
-					rf.log= append(rf.log,args.Entries[j])
+				if reply.LogIndex <= 0 {
+					DPrintf("Stage 2 appear replyLogIndex <0\n")
 				}
-				rf.persist()
-				reply.LogIndex = len(args.Entries)
-				break
+				return
 			}
-			reply.LogIndex = i+1
+			DPrintf("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
+			//优化
+			lastId, _ = rf.GetLastLogIno()
+			reply.LogIndex = args.PrevLogIndex + 1
+			reply.Success = true
+			for i := args.PrevLogIndex; i < len(args.Entries); i++ {
+				if i > lastId {
+					rf.log = append(rf.log, args.Entries[i:]...)
+					rf.persist()
+					reply.LogIndex = len(rf.log)
+					break
+				}
+				if rf.log[i].Term != args.Entries[i].Term {
+					rf.log = rf.log[:i]
+					rf.log = append(rf.log, args.Entries[i:]...)
+					/*
+						for j:=i; j<len(args.Entries); j++ {
+							rf.log = append(rf.log,args.Entries[j])
+						}
+					*/
+					rf.persist()
+					reply.LogIndex = len(rf.log)
+					break
+				}
+				reply.LogIndex = i + 1
+			}
+			if reply.LogIndex <= 0 {
+				DPrintf("Stage 3 appear replyLogIndex <0\n")
+			}
 		}
-		if reply.LogIndex <= 0 {
-			DPrintf("Stage 3 appear replyLogIndex <0\n")
-		}
-
 		//注意prevLogIndex可能大于leadercommit,leadercommit不是最新
 		//minId := judge(&args.PrevLogIndex,&args.LeaderCommit)
+		judge :=func(a *int,b *int) int {
+			if *a > *b {
+				return *b
+			}
+			return *a
+		}
 		if args.LeaderCommit > rf.commitIndex  {
 			lastId,_ := rf.GetLastLogIno()
 			rf.commitIndex = judge(&lastId,&args.LeaderCommit)
@@ -425,20 +415,20 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 }
 
 
-func (rf *Raft) UpdateCommitIndex (args *AppendEntryArgs) {
+func (rf *Raft) UpdateCommitIndex (log []Log) {
 
 	/*
 		大多数的日志已经一致,更新commitedIndex
 		leader只允许commit当前term的entry，其实是指积压着之前已经被majority认可的entry，
 		直到当前term也被majority认可，然后统一commit。
-	 */
+	*/
 	rf.mu.Lock()
 	if rf.state == leader {
 		//DPrintf("*******************************************%d",len(args.Entries))
 		//DPrintf(string(rf.state)+" "+strconv.Itoa(rf.me)+" currentTerm:"+strconv.Itoa(rf.currentTerm)+"CommitInedx:"+strconv.Itoa(rf.commitIndex))
-		for i:=len(args.Entries)-1; i > rf.commitIndex; i-- {
+		for i:=len(log)-1; i > rf.commitIndex; i-- {
 			//DPrintf("LogId: "+strconv.Itoa(i+1)+" LogTerm:"+strconv.Itoa(args.Entries[i].Term))
-			if args.Entries[i].Term == rf.currentTerm {
+			if log[i].Term == rf.currentTerm {
 				num :=1
 				for j := range rf.peers {
 					if j != rf.me {
@@ -456,7 +446,7 @@ func (rf *Raft) UpdateCommitIndex (args *AppendEntryArgs) {
 			}
 		}
 		if rf.lastApplied <= rf.commitIndex {
-			go rf.ApplyStateMachine(&rf.lastApplied,&rf.commitIndex,args.Entries)
+			go rf.ApplyStateMachine(&rf.lastApplied,&rf.commitIndex,log)
 		}
 	}
 	rf.mu.Unlock()
@@ -475,69 +465,92 @@ func(rf *Raft) SendHeartBeat() {
 				}
 				//DPrintf("---HeartBeat--------%s %d currentterm %d send to follower %d\n",
 				//	rf.state,rf.me,rf.currentTerm,i)
-				preId := rf.nextIndex[i]-1
+
+				//DPrintf("check %d is preId is %d",i,preId)
+				//需要拷贝一个新日志，rpc是异步处理,日志可能会改变
+				preId := rf.nextIndex[i]
 				if preId < 0 {
 					DPrintf("*****preId=%d***** follower=%d***\n",preId,rf.me)
 				}
-				//DPrintf("check %d is preId is %d",i,preId)
-				//需要拷贝一个新日志，rpc是异步处理,日志可能会改变
-				preTerm := rf.log[preId].Term
+				var preTerm int
+				if preId == len(rf.log) {
+					preTerm = -1
+				} else {
+					preTerm = rf.log[preId].Term
+				}
 				entries := make([]Log,len(rf.log))
 				copy(entries,rf.log)
-				append_args := &AppendEntryArgs{
+				//Logs := make([]Log,len(rf.log)-preId)
+				//copy(entries,rf.log[preId:])
+				Logs := make([]Log,len(rf.log))
+				copy(entries,rf.log)
+				appendArgs := &AppendEntryArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
 					PrevLogIndex: preId,
 					PrevLogTerm:  preTerm,
-					Entries: entries,
+					Entries: Logs,
 					LeaderCommit: rf.commitIndex,
 				}
-				append_reply := AppendEntryReply{
+				appendReply := AppendEntryReply{
 					Term:    -1,
 					Success: false,
-					LogIndex:-1,
+					LogIndex: -1,
+					ConflictTerm : -1,
 				}
 				rf.mu.Unlock()
-				ok := rf.peers[i].Call("Raft.HeartBeat",append_args,&append_reply)
+				ok := rf.peers[i].Call("Raft.HeartBeat",appendArgs,&appendReply)
 				rf.mu.Lock()
 				if ok && rf.state == leader {
-					if append_reply.Term > rf.currentTerm {
-						rf.currentTerm = append_reply.Term
+					if appendReply.Term > rf.currentTerm {
+						rf.currentTerm = appendReply.Term
 						if rf.state != follower {
 							rf.ChangeState(follower)
 							// 不需要rf.stateChange <- follower，因为leader没有重置时间片的必要
 						}
-					}else {
+					}else if appendReply.Term == rf.currentTerm {
 						//DPrintf("Reply LogIndex %d\n",append_reply.LogIndex)
 						/*
 							nextIndex[i]: leader当前需要同步follower i的日志索引
 							matchIndex[i]: leader当前确定已经同步的follower i的日志索引
-						 */
-						if !append_reply.Success {
+						*/
+						if !appendReply.Success {
 							/*
 								Figure8Unreliable2C测试出现了返回-1的情况。。。。
 								猜测是leader发送appendRPC给follower i，然后leader转换为follower
 								之后该节点再次成为leader，当时follower j返回的RPC信息这时才回到leader，接着便进入该段代码
+								需要判断返回的term
 							*/
-							rf.nextIndex[i] = append_reply.LogIndex
+							if rf.matchIndex[i] < appendReply.LogIndex  {
+								rf.nextIndex[i] = appendReply.LogIndex
+								if appendReply.ConflictTerm != -1 {
+									for j := appendReply.LogIndex-1; j > rf.matchIndex[i]; j-- {
+										if rf.log[i].Term == appendReply.ConflictTerm {
+											rf.nextIndex[i] = j
+										}
+									}
+								}
+							} else {
+								rf.nextIndex[i] = rf.matchIndex[i]
+							}
 							if rf.nextIndex[i] < 0 {
 								DPrintf("!!!nextIndex <0!!!!!\n")
 							}
-						}else {
+						} else {
 							// 同上要注意'旧'的RPC
 							/*
-							update matchIndex to be prevLogIndex + len(entries[])
+								update matchIndex to be prevLogIndex + len(entries[])
 							*/
-							if rf.matchIndex[i] < append_reply.LogIndex-1 {
-								rf.matchIndex[i] = append_reply.LogIndex - 1
-								rf.nextIndex[i] = append_reply.LogIndex
+							if rf.matchIndex[i] < appendReply.LogIndex-1 {
+								rf.matchIndex[i] = appendReply.LogIndex-1
+								rf.nextIndex[i] = appendReply.LogIndex
 							}
 							if rf.nextIndex[i] < 0 {
 								DPrintf("nextIndex <0!!!!!\n")
 							}
 						}
 						//不能直接用rf.log更新
-						go rf.UpdateCommitIndex(append_args)
+						go rf.UpdateCommitIndex(entries)
 					}
 				}
 				rf.mu.Unlock()
@@ -570,7 +583,6 @@ func (rf *Raft)LeaderElection() {
 					VoteGranted: false,
 				}
 				rf.mu.Unlock()
-
 				rf.sendRequestVote(i,request_vote,&request_reply)
 			}(i)
 		}
@@ -750,17 +762,17 @@ func (rf *Raft) StartLeaderElection() {
 	go rf.LeaderElection()
 	rf.ResetTimer()
 	select {
-		/*case  <- rf.stateChange:
-			DPrintf("candidate statechange"+string(rf.state)+strconv.Itoa(rf.me))
-		case <- rf.heartBeat[]:
-			time.Duration(rand.Intn(200)+350) */
+	/*case  <- rf.stateChange:
+		DPrintf("candidate statechange"+string(rf.state)+strconv.Itoa(rf.me))
+	case <- rf.heartBeat[]:
+		time.Duration(rand.Intn(200)+350) */
 
-		case <- rf.candidateChan:
-			DPrintf("Candidate change to %s ID:%d\n",string(rf.state),rf.me)
-		case <- rf.timer.C:   //time.After(time.Duration(rand.Int63() % 333 + 550) * time.Millisecond):
-			rf.mu.Lock()
-			rf.ChangeState(candidate)
-			rf.mu.Unlock()
+	case <- rf.candidateChan:
+		DPrintf("Candidate change to %s ID:%d\n",string(rf.state),rf.me)
+	case <- rf.timer.C:   //time.After(time.Duration(rand.Int63() % 333 + 550) * time.Millisecond):
+		rf.mu.Lock()
+		rf.ChangeState(candidate)
+		rf.mu.Unlock()
 	}
 }
 
@@ -768,38 +780,38 @@ func (rf *Raft) StartLeaderElection() {
 func (rf *Raft) StartFollower() {
 	//DPrintf("id:"+strconv.Itoa(rf.me)+","+string(rf.state)+" currenterm"+strconv.Itoa(rf.currentTerm))
 	/*
-	    agreeVote 和 statechange是为了重置时间片,重置时间片直接Reset时间片就行了
-		stateChange 应该是当时解决出现old term的follower设置的，感觉没必要删除
-	 */
+		    agreeVote 和 statechange是为了重置时间片,重置时间片直接Reset时间片就行了
+			stateChange 应该是当时解决出现old term的follower设置的，感觉没必要删除
+	*/
 	rf.ResetTimer()
 	select {
-		/*
+	/*
 		case <- rf.agreeVote:
 		case  <- rf.stateChange:
 			//DPrintf("follower %d changeState!!!!! ",rf.me)
 		case <- rf.heartBeat:
 			//DPrintf("follower %d Receive HeartBeat!!!!! ",rf.me)
 			//time.After(150 * time.Millisecond)
-		*/
-		case <- rf.timer.C: //time.After(time.Duration(rand.Int63() % 333 + 550) * time.Millisecond):
-			//	DPrintf("follower %d timeLimit!!!!! ",rf.me)
-			rf.mu.Lock()
-			rf.ChangeState(candidate)
-			rf.mu.Unlock()
+	*/
+	case <- rf.timer.C: //time.After(time.Duration(rand.Int63() % 333 + 550) * time.Millisecond):
+		//	DPrintf("follower %d timeLimit!!!!! ",rf.me)
+		rf.mu.Lock()
+		rf.ChangeState(candidate)
+		rf.mu.Unlock()
 	}
 }
 
 func (rf *Raft) StartAppendEntry() {
 	rf.StartAppendEntry()
 	select {
-		//case  <- rf.stateChange:
-			//rf.ChangeState(s)
+	//case  <- rf.stateChange:
+	//rf.ChangeState(s)
 
-		//case <- rf.heartBeat:
-			//	DPrintf("old leader Receive HeartBeat!!!!!")
-			//rf.ChangeState(follower)
+	//case <- rf.heartBeat:
+	//	DPrintf("old leader Receive HeartBeat!!!!!")
+	//rf.ChangeState(follower)
 
-		case <- time.After(150 * time.Millisecond):
+	case <- time.After(150 * time.Millisecond):
 	}
 }
 
@@ -810,14 +822,14 @@ func (rf *Raft) StartHeratBeat() {
 	// 心跳和日志同步如何分开
 	rf.SendHeartBeat()
 	select {
-		//case <- rf.stateChange:
-			//rf.ChangeState(s)
+	//case <- rf.stateChange:
+	//rf.ChangeState(s)
 
-		//case <- rf.heartBeat:
-			//	DPrintf("old leader Receive HeartBeat!!!!!")
-			//rf.ChangeState(follower)
+	//case <- rf.heartBeat:
+	//	DPrintf("old leader Receive HeartBeat!!!!!")
+	//rf.ChangeState(follower)
 
-		case <- time.After(70 * time.Millisecond):
+	case <- time.After(70 * time.Millisecond):
 	}
 }
 
@@ -838,9 +850,9 @@ func (rf *Raft) ApplyStateMachine(lastApplied,commitIndex *int,log []Log) {
 	}
 	rf.lastApplied = *commitIndex
 	/*
-	if rf.lastApplied < *commitIndex {
-		rf.lastApplied = *commitIndex
-	}
+		if rf.lastApplied < *commitIndex {
+			rf.lastApplied = *commitIndex
+		}
 	*/
 }
 func Make(peers []*labrpc.ClientEnd, me int,
@@ -859,7 +871,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = follower
 	rf.currentTerm = 0
 	rf.voteFor = -1
-	rf.log = append(rf.log,Log{"",0})
+	rf.log = append(rf.log,Log{"",-1})
 	rf.lastApplied = 0
 	rf.commitIndex = 0
 	rf.voteNum = 0
