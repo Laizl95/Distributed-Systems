@@ -306,7 +306,9 @@ func (cfg *config) checkOneLeader() int {
 		leaders := make(map[int][]int)
 		for i := 0; i < cfg.n; i++ {
 			if cfg.connected[i] {// whether each server is on the net
+				cfg.rafts[i].mu.Lock()
 				fmt.Println(cfg.rafts[i].me," ",cfg.rafts[i].state," ",cfg.rafts[i].currentTerm)
+				cfg.rafts[i].mu.Unlock()
 				if term, leader := cfg.rafts[i].GetState(); leader {
 					leaders[term] = append(leaders[term], i)
 				}

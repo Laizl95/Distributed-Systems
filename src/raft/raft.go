@@ -90,6 +90,8 @@ func (rf *Raft) GetLastLogIno() (int,int) {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	// Your code here (2A).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	return rf.currentTerm, rf.state==leader
 }
 
@@ -273,7 +275,7 @@ func (rf *Raft) AppendEntry(args *AppendEntryArgs) {
 func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 	//DPrintf("%s %d receive HeartBeat!!!!!!",rf.state,rf.me)
 	rf.mu.Lock()
-	defer  rf.mu.Unlock()
+	defer rf.mu.Unlock()
 	/*
 		heartbeat 时为什么不需要比较最后一条日志的索引和log term？？
 	*/
@@ -318,6 +320,7 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 			  	reply.LogIndex 		follower想要同步的日志索引
 		*/
 		//当前follower还没有这条日志
+		DPrintf("*******PreVLogIndex=%d LastId=%d*******",args.PrevLogIndex,lastId)
 		if args.PrevLogIndex > lastId {
 			//DPrintf("**************************\n")
 			reply.LogIndex = lastId
@@ -330,6 +333,7 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 		//过最后一个test需要优化：找到当前term的第一个日志发送给leader
 		DPrintf("LogIndex:%d Leader:%d is LogTerm:%d \n follower %d is LogTerm is %d",
 			args.PrevLogIndex,args.LeaderId, args.PrevLogTerm,rf.me,rf.log[args.PrevLogIndex].Term)
+
 		DPrintf("******PrevLogIndex=%d\n***********",args.PrevLogIndex)
 		if args.PrevLogIndex == 0 {
 			reply.Success = true
@@ -341,19 +345,22 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 			reply.LogIndex = len(rf.log)
 			return
 		}
+
 		if args.PrevLogTerm == -1  {
 			reply.Success = false
 			reply.ConflictTerm = -1
 			reply.LogIndex = args.PrevLogIndex-1
 		} else {
+			DPrintf("args.PrevLogTerm=%d rf.log[%d].Term=%d LOGlen=%d",args.PrevLogTerm,args.PrevLogIndex,
+				rf.log[args.PrevLogIndex].Term,len(args.Entries))
 			if args.PrevLogTerm != rf.log[args.PrevLogIndex].Term {
 				DPrintf("((((((((((()))))))))))")
 				term := rf.log[args.PrevLogIndex].Term
 				reply.Success = false
 				reply.ConflictTerm = term
-				//reply.LogIndex = args.PrevLogIndex-1
-				//rf.log = rf.log[:args.PrevLogIndex]
-				//rf.persist()
+				reply.LogIndex = args.PrevLogIndex-1
+				rf.log = rf.log[:args.PrevLogIndex]
+				rf.persist()
 				for i := args.PrevLogIndex-1; i >= 0; i-- {
 					if i == 0 || rf.log[i].Term != term  {
 						reply.LogIndex = i + 1
@@ -411,7 +418,6 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 			go rf.ApplyStateMachine(&rf.lastApplied,&rf.commitIndex,rf.log)
 		}
 	}
-
 }
 
 
@@ -478,12 +484,23 @@ func(rf *Raft) SendHeartBeat() {
 				} else {
 					preTerm = rf.log[preId].Term
 				}
+				/*
+					panic: runtime error: index out of range [10] with length 6
+
+				goroutine 70751 [running]:
+				raft.(*Raft).SendHeartBeat.func1(0xc000509200, 0x3)
+					/home/laizhilong/Desktop/goProject/src/raft/raft.go:485 +0x17c2
+				created by raft.(*Raft).SendHeartBeat
+					/home/laizhilong/Desktop/goProject/src/raft/raft.go:466 +0xaa
+				exit status 2
+
+				*/
 				entries := make([]Log,len(rf.log))
 				copy(entries,rf.log)
 				//Logs := make([]Log,len(rf.log)-preId)
 				//copy(entries,rf.log[preId:])
 				Logs := make([]Log,len(rf.log))
-				copy(entries,rf.log)
+				copy(Logs,rf.log)
 				appendArgs := &AppendEntryArgs{
 					Term:         rf.currentTerm,
 					LeaderId:     rf.me,
@@ -521,6 +538,8 @@ func(rf *Raft) SendHeartBeat() {
 								之后该节点再次成为leader，当时follower j返回的RPC信息这时才回到leader，接着便进入该段代码
 								需要判断返回的term
 							*/
+							DPrintf("follower:%d matchIndex[%d]=%d LogIndex=%d",i,i,rf.matchIndex[i],
+								appendReply.LogIndex)
 							if rf.matchIndex[i] < appendReply.LogIndex  {
 								rf.nextIndex[i] = appendReply.LogIndex
 								if appendReply.ConflictTerm != -1 {
@@ -706,7 +725,7 @@ func (rf *Raft) Kill() {
 func (rf *Raft) ChangeState(s state) {
 
 	if s == leader {
-		rf.state =s
+		rf.state = s
 		last_id,_ := rf.GetLastLogIno()
 		for i:= range rf.peers {
 			if i != rf.me {
@@ -760,7 +779,9 @@ func (rf *Raft) ResetTimer() {
 func (rf *Raft) StartLeaderElection() {
 	//DPrintf("id:"+strconv.Itoa(rf.me)+","+string(rf.state)+" currenterm"+strconv.Itoa(rf.currentTerm))
 	go rf.LeaderElection()
+	rf.mu.Lock()
 	rf.ResetTimer()
+	rf.mu.Unlock()
 	select {
 	/*case  <- rf.stateChange:
 		DPrintf("candidate statechange"+string(rf.state)+strconv.Itoa(rf.me))
@@ -783,7 +804,9 @@ func (rf *Raft) StartFollower() {
 		    agreeVote 和 statechange是为了重置时间片,重置时间片直接Reset时间片就行了
 			stateChange 应该是当时解决出现old term的follower设置的，感觉没必要删除
 	*/
+	rf.mu.Lock()
 	rf.ResetTimer()
+	rf.mu.Unlock()
 	select {
 	/*
 		case <- rf.agreeVote:
@@ -871,7 +894,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = follower
 	rf.currentTerm = 0
 	rf.voteFor = -1
-	rf.log = append(rf.log,Log{"",-1})
+	rf.log = append(rf.log,Log{"",0})
 	rf.lastApplied = 0
 	rf.commitIndex = 0
 	rf.voteNum = 0
@@ -904,15 +927,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					rf.state,rf.me,rf.currentTerm,rf.voteFor,i+1,rf.log[i].Command,rf.log[i].Term)
 			}
 			DPrintf("\n")*/
-			if rf.state == candidate {
+			var nowState state
+			rf.mu.Lock()
+			nowState = rf.state
+			rf.mu.Unlock()
+			if nowState == candidate {
 				rf.StartLeaderElection()
-			}
-			if rf.state == follower {
+			} else if nowState == follower {
 				rf.StartFollower()
-			}
-			if rf.state == leader {
+			} else if nowState == leader {
 				rf.StartHeratBeat()
-
 			}
 		}
 	}()
