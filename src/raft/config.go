@@ -10,7 +10,6 @@ package raft
 
 import (
 	"labrpc"
-	"strconv"
 )
 import "log"
 import "sync"
@@ -376,7 +375,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 		cmd1, ok := cfg.logs[i][index]
 		cfg.mu.Unlock()
 
-		DPrintf("CMD1="+strconv.Itoa(cmd1))
+		//DPrintf("CMD1="+strconv.Itoa(cmd1))
 		if ok {
 			if count > 0 && cmd != cmd1 {
 				cfg.t.Fatalf("committed values do not match: index %v, %v, %v\n",
@@ -449,13 +448,14 @@ func (cfg *config) one(cmd int, expectedServers int, retry bool) int {
 			if rf != nil {
 				index1, _, ok := rf.Start(cmd)
 				//DPrintf("___________"+strconv.Itoa(index1))
+				DPrintf("___Index=%d ok=%t",index1,ok)
 				if ok {
 					index = index1
 					break
 				}
 			}
 		}
-	//DPrintf("*******************"+strconv.Itoa(index))
+	DPrintf("*******************Index=%d",index)
 		if index != -1 {
 			// somebody claimed to be the leader and to have
 			// submitted our command; wait a while for agreement.

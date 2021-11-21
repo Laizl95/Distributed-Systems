@@ -25,7 +25,6 @@ func TestInitialElection2A(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2A): initial election")
-
 	// is a leader elected?
 	cfg.checkOneLeader()
 
@@ -60,12 +59,12 @@ func TestReElection2A(t *testing.T) {
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
-	fmt.Println("11111111111111111111111")
+	//fmt.Println("11111111111111111111111")
 	// if the old leader rejoins, that shouldn't
 	// disturb the new leader.
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
-	fmt.Println("22222222222222222222222")
+	//fmt.Println("22222222222222222222222")
 	// if there's no quorum, no leader should
 	// be elected.
 	cfg.disconnect(leader2)
@@ -75,19 +74,19 @@ func TestReElection2A(t *testing.T) {
 
 	// if a quorum arises, it should elect a leader.
 	cfg.connect((leader2 + 1) % servers)
-	fmt.Println("3333333333333333333333333")
+	//fmt.Println("3333333333333333333333333")
 	cfg.checkOneLeader()
 
 	// re-join of last node shouldn't prevent leader from existing.
 	cfg.connect(leader2)
-	fmt.Println("44444444444444444444444444")
+	//fmt.Println("44444444444444444444444444")
 	cfg.checkOneLeader()
 
 	cfg.end()
 }
 
 func TestBasicAgree2B(t *testing.T) {
-	servers := 5
+	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
