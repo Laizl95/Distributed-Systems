@@ -74,9 +74,10 @@ type Raft struct {
 	//heartBeat []chan bool
 	//stateChange chan state
 	//agreeVote []chan bool
-	 stopHeartBeat chan bool
+	// stopHeartBeat chan bool
 	// stopAppendEntry chan bool
-	candidateChan chan struct{}
+	//candidateChan chan bool
+	stateChange chan state
 	applyCh chan ApplyMsg
 	//electionTimer *time.Timer
 	timer *time.Timer
@@ -247,18 +248,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		//rf.currentTerm= args.Term
 		//1个chan时可能同时发生超时、状态变换导致管道阻塞 当时错误地理解了channel。。。。
 
-		// 向chanel发送数据，但是state已经是follower。。。时间片不断被重置，不在运行该代码块，一直阻塞，
-		// 已经无法接受数据
-		if rf.state == candidate {
-			rf.candidateChan <- struct{}{}
+		/*
+			向chanel发送数据，但是state已经是follower。。。时间片不断被重置，不在运行该代码块，
+			一直阻塞，无法接受数据
+		*/
+		/*if rf.state == candidate {
+			rf.stateChange <- follower
 		} else if rf.state == leader {
 			//rf.stopAppendEntry <- true
 			rf.stopHeartBeat <- true
 		}
 		rf.ChangeState(follower)
-		rf.ResetHeartBeatTimer()
-		//rf.stateChange <- follower
-		//rf.ResetTimer()
+		rf.ResetHeartBeatTimer()*/
+		rf.stateChange <- follower
 		rf.currentTerm = args.Term
 	}
 
@@ -279,18 +281,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if lastLog.Term < args.LastLogTerm {
 		//rf.agreeVote <- true
 
-		if rf.state == candidate {
-			rf.candidateChan <- struct{}{}
+		/*if rf.state == candidate {
+			rf.candidateChan <- false
 		} else if rf.state == leader {
 			//rf.stopAppendEntry <- true
 			rf.stopHeartBeat<- true
 		}
-		rf.ChangeState(follower)
+		rf.ChangeState(follower)*/
+		rf.stateChange <- follower
 		rf.currentTerm = args.Term
 		rf.voteFor = args.CandidateId
 		reply.VoteGranted = true
 		rf.persist()
-		rf.ResetHeartBeatTimer()
+		//rf.ResetHeartBeatTimer()
 		//DPrintf("Func RequestVote %s:%d  currentTerm=%d agreeVote to candidateID=%d candidateTerm=%d",
 			//rf.state,rf.me,rf.currentTerm,args.CandidateId,args.Term)
 		return
@@ -300,18 +303,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 
-	if rf.state == candidate {
-		rf.candidateChan <- struct{}{}
+	/*if rf.state == candidate {
+		rf.candidateChan <- false
 	} else if rf.state == leader {
 		//rf.stopAppendEntry <- true
-		rf.stopHeartBeat<- true
+		rf.stopHeartBeat <- true
 	}
-	rf.ChangeState(follower)
+	rf.ChangeState(follower)*/
+	rf.stateChange <- follower
 	rf.currentTerm = args.Term
 	rf.voteFor = args.CandidateId
 	reply.VoteGranted = true
 	rf.persist()
-	rf.ResetHeartBeatTimer()
+	//rf.ResetHeartBeatTimer()
 	DPrintf("Func RequestVote %s:%d  currentTerm=%d agreeVote to candidateID=%d candidateTerm=%d",
 		rf.state,rf.me,rf.currentTerm,args.CandidateId,args.Term)
 	return
@@ -329,18 +333,15 @@ func (rf *Raft) HeartBeat(args *AppendEntryArgs,reply *AppendEntryReply) {
 		reply.Term = rf.currentTerm
 		reply.Success = false
 	}else {
-
-		if rf.state == candidate {
-			rf.candidateChan <- struct{}{}
-			rf.ChangeState(follower)
-		} else if rf.state == leader {
-			//rf.stopAppendEntry <- true
-			rf.stopHeartBeat <- true
-			rf.ChangeState(follower)
-		} else if rf.currentTerm < args.Term {
-			rf.ChangeState(follower)
+		if rf.state == candidate || rf.state == leader{
+			rf.stateChange <- follower
 		}
-		rf.currentTerm = args.Term
+		if rf.currentTerm < args.Term {
+			rf.voteFor = -1
+			rf.voteNum =0
+			rf.currentTerm = args.Term
+			rf.persist()
+		}
 		reply.Term = args.Term
 		rf.ResetHeartBeatTimer()
 	}
@@ -356,23 +357,36 @@ func (rf *Raft) AppendEntry(args *AppendEntryArgs,reply *AppendEntryReply) {
 		reply.Term = rf.currentTerm
 		reply.Success = false
 	}else {
+		/*if rf.currentTerm < args.Term {
+			rf.voteFor = -1
+			rf.voteNum =0
+			rf.currentTerm = args.Term
+			rf.persist()
+		}
 		if rf.state == candidate {
-			rf.candidateChan <- struct{}{}
+			rf.candidateChan <- false
 			rf.ChangeState(follower)
 		} else if rf.state == leader {
 			//rf.stopAppendEntry <- true
-			rf.stopHeartBeat<- true
-			rf.ChangeState(follower)
-		} else if rf.currentTerm < args.Term {
+			rf.stopHeartBeat <- true
 			rf.ChangeState(follower)
 		}
-		rf.currentTerm = args.Term
 		reply.Term = args.Term
 		reply.Success = false
-		//  rf.heartBeat <- true 修改为重置时间片即可
+		rf.ResetHeartBeatTimer()*/
+		if rf.state == candidate || rf.state == leader{
+			rf.stateChange <- follower
+		}
+		if rf.currentTerm < args.Term {
+			rf.voteFor = -1
+			rf.voteNum =0
+			rf.currentTerm = args.Term
+			rf.persist()
+		}
+		reply.Term = args.Term
+		reply.Success = false
 		rf.ResetHeartBeatTimer()
-		//DPrintf("%s %d has passed heartbeat",rf.state,rf.me)
-		lastId,_ := rf.GetLastLogIno()
+
 
 		/*
 			日志同步时不能随意截断日志，因为可能存在过时的RPC
@@ -394,6 +408,7 @@ func (rf *Raft) AppendEntry(args *AppendEntryArgs,reply *AppendEntryReply) {
 			  	reply.LogIndex 		follower想要同步的日志索引
 		*/
 		//当前follower还没有这条日志
+		lastId,_ := rf.GetLastLogIno()
 		DPrintf("Func AppendEntry: Follower:%d agrs.PreVLogIndex=%d FOLLOWERLastlogId=%d*******",
 			rf.me,args.PrevLogIndex,lastId)
 		if args.PrevLogIndex > lastId {
@@ -598,10 +613,10 @@ func(rf *Raft) SendAppendEntry() {
 					if appendReply.Term > rf.currentTerm {
 						rf.currentTerm = appendReply.Term
 						if rf.state != follower {
-							rf.stopHeartBeat <- true
+							rf.stateChange <- follower
 							//rf.stopAppendEntry <- true
-							rf.ChangeState(follower)
-							rf.ResetHeartBeatTimer()
+							//rf.ChangeState(follower)
+							//rf.ResetHeartBeatTimer()
 							// 不需要rf.stateChange <- follower，因为leader没有重置时间片的必要
 						}
 					}else if appendReply.Term == rf.currentTerm {
@@ -691,9 +706,9 @@ func(rf *Raft) SendHeartBeat() {
 						rf.currentTerm = appendReply.Term
 						//if rf.state != follower {
 							//rf.stopAppendEntry <- true
-							rf.stopHeartBeat <- true
-							rf.ChangeState(follower)
-							rf.ResetHeartBeatTimer()
+							rf.stateChange <- follower
+							//rf.ChangeState(follower)
+							//rf.ResetHeartBeatTimer()
 							// 不需要rf.stateChange <- follower，因为leader没有重置时间片的必要
 						//}
 					}
@@ -774,30 +789,31 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 			rf.currentTerm,reply.VoteGranted,reply.Term)
 		//  reply.Term > rf.currentTerm
 		if args.Term == rf.currentTerm && rf.state == candidate {
-			if reply.Term > rf.currentTerm  || !reply.VoteGranted {
+			if !reply.VoteGranted {
 				// 多个节点返回该信息，这时已经是follower的节点不能再收到这个信息了
 				// 可能之后收到的term更大，但是没有必要在这里更新了。可以由heartbeat或者new vote来更新term
-				rf.currentTerm = reply.Term
-				rf.candidateChan <- struct{}{}
+				if reply.Term > rf.currentTerm {
+					rf.currentTerm = reply.Term
+					rf.persist()
+				}
+				rf.stateChange <- follower
+				/*rf.candidateChan <- false
 				rf.ChangeState(follower)
-				rf.ResetHeartBeatTimer()
+				rf.ResetHeartBeatTimer()*/
 				//rf.stateChange <- follower
-			}else if reply.Term == rf.currentTerm && reply.VoteGranted  {
+			}else if reply.VoteGranted  {
+				if reply.Term > rf.currentTerm {
+					rf.currentTerm = reply.Term
+				}
 				rf.voteNum += 1
+				rf.persist()
 				if rf.voteNum >= len(rf.peers)/2+1 {
 					// 和607的情况类似
-					if rf.state != leader {
+					//if rf.state != leader {
 						DPrintf("success new leader:%d\n",rf.me)
-						rf.candidateChan <- struct{}{}
-						rf.ChangeState(leader)
-						/*
-						var command interface{} = 1
-						rf.log = append(rf.log,Log{
-							Command: command,
-							Term: rf.currentTerm},
-						)*/
-						//rf.stateChange <- leader
-					}
+						rf.stateChange <- leader
+						//rf.ChangeState(leader)
+					//}
 				}
 			}
 		}
@@ -864,7 +880,7 @@ func (rf *Raft) Kill() {
 func (rf *Raft) ChangeState(s state) {
 
 	if s == leader {
-		rf.state = s
+		//rf.state = s
 		lastId,_ := rf.GetLastLogIno()
 		for i := range rf.peers {
 			if i != rf.me {
@@ -872,17 +888,23 @@ func (rf *Raft) ChangeState(s state) {
 				rf.matchIndex[i] = 0
 			}
 		}
+		rf.persist()
+		rf.timer.Stop()
 	}else if s == candidate {
 		rf.currentTerm += 1
 		rf.voteFor = rf.me
 		rf.voteNum = 1
 		rf.state = s
+		rf.persist()
+		rf.ResetElectionTimer()
 	}else {
 		rf.voteFor = -1
 		rf.voteNum = 0
 		rf.state = s
+		rf.persist()
+		rf.ResetHeartBeatTimer()
 	}
-	rf.persist()
+
 }
 //
 // the service or tester wants to create a Raft server. the ports
@@ -907,7 +929,7 @@ func (rf *Raft) ResetElectionTimer() {
 	rf.timer.Reset(d)
 }
 func (rf *Raft)  ResetHeartBeatTimer() {
-	d := time.Duration(170) * time.Millisecond
+	d := time.Duration(150) * time.Millisecond
 	rf.timer.Reset(d)
 }
 /*
@@ -920,9 +942,9 @@ func (rf *Raft)  ResetHeartBeatTimer() {
 	添加timeer对象，当发生agreevote、statechange等情况时及时重置时间片
 
  	statrchange canntidate->follower or leader
-	statechange和heartbe是告诉不需要发起投票了, 发生这两种情况时，由当前节点自己通知而不是其他节点
+	statechange和heartbert是告诉不需要发起投票了, 发生这两种情况时，由当前节点自己通知而不是其他节点
 */
-func (rf *Raft) StartLeaderElection() {
+/*func (rf *Raft) StartLeaderElection() {
 	//DPrintf("id:"+strconv.Itoa(rf.me)+","+string(rf.state)+" currenterm"+strconv.Itoa(rf.currentTerm))
 	go rf.LeaderElection()
 	select {
@@ -931,9 +953,14 @@ func (rf *Raft) StartLeaderElection() {
 	case <- rf.heartBeat[]:
 		time.Duration(rand.Intn(200)+350) */
 
-	case <- rf.candidateChan:
+	/*case  ok := <-rf.candidateChan:
 		rf.mu.Lock()
 		DPrintf("Candidate change to %s ID:%d\n",string(rf.state),rf.me)
+		if ok {
+			rf.state = leader
+		}else {
+			rf.state = follower
+		}
 		rf.mu.Unlock()
 	case <- rf.timer.C:   //time.After(time.Duration(rand.Int63() % 333 + 550) * time.Millisecond):
 		rf.mu.Lock()
@@ -957,7 +984,7 @@ func (rf *Raft) StartFollower() {
 	rf.ResetHeartBeatTimer()
 	rf.mu.Unlock()
 	*/
-	select {
+	//select {
 	/*
 		case <- rf.agreeVote:
 		case  <- rf.stateChange:
@@ -966,33 +993,26 @@ func (rf *Raft) StartFollower() {
 			//DPrintf("follower %d Receive HeartBeat!!!!! ",rf.me)
 			//time.After(150 * time.Millisecond)
 	*/
-	case <- rf.timer.C: //time.After(time.Duration(rand.Int63() % 333 + 550) * time.Millisecond):
-		//	DPrintf("follower %d timeLimit!!!!! ",rf.me)
+	/*case <- rf.timer.C: //time.After(time.Duration(rand.Int63() % 333 + 550) * time.Millisecond):
+			DPrintf("follower %d timeLimit!!!!! ",rf.me)
 		rf.mu.Lock()
 		if rf.state == follower {
 			rf.ChangeState(candidate)
+			rf.state = candidate
 			rf.ResetElectionTimer()
 		}
 		rf.mu.Unlock()
 	}
-}
+}*/
 
 func (rf *Raft) StartAppendEntry() {
-	go rf.SendAppendEntry()
+	rf.SendAppendEntry()
 	select {
-	case  <- rf.stopHeartBeat:
-
-	//rf.ChangeState(s)
-
-	//case <- rf.heartBeat:
-	//	DPrintf("old leader Receive HeartBeat!!!!!")
-	//rf.ChangeState(follower)
-
-	case <- time.After(80 * time.Millisecond):
+		case <- time.After(80 * time.Millisecond):
 	}
 }
 
-func (rf *Raft) StartHeratBeat() {
+/*func (rf *Raft) StartHeratBeat() {
 	//DPrintf("id:"+strconv.Itoa(rf.me)+","+string(rf.state)+" currenterm"+strconv.Itoa(rf.currentTerm))
 	//The tester requires that the leader send heartbeat RPCs
 	//no more than ten times per second.
@@ -1000,16 +1020,17 @@ func (rf *Raft) StartHeratBeat() {
 	go rf.SendHeartBeat()
 	select {
 		case <- rf.stopHeartBeat:
+			rf.mu.Lock()
 			DPrintf("------StopHeatBeat------ %s:%d",rf.state,rf.me)
-		//rf.ChangeState(s)
-
+			rf.state = follower
+			rf.mu.Unlock()
 		//case <- rf.heartBeat:
 		//	DPrintf("old leader Receive HeartBeat!!!!!")
 		//rf.ChangeState(follower)
 
 		case <- time.After(80 * time.Millisecond):
 	}
-}
+}*/
 
 // 传参应该用指针，lastApplied和commitIndex是有可能会变的,确保只提交一次
 func (rf *Raft) ApplyStateMachine(lastApplied,commitIndex *int,log []Log) {
@@ -1048,9 +1069,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//rf.heartBeat = make([]chan bool,len(peers))
 	//rf.stateChange = make(chan state)
 	//rf.agreeVote = make([]chan bool,len(peers))
-	rf.candidateChan = make(chan struct{})
-	rf.stopHeartBeat = make(chan bool)
+	//rf.candidateChan = make(chan bool)
+	//rf.stopHeartBeat = make(chan bool)
 	//rf.stopAppendEntry = make(chan bool)
+	rf.stateChange = make(chan state)
 	rf.state = follower
 	rf.currentTerm = 0
 	rf.voteFor = -1
@@ -1061,15 +1083,39 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex= make([]int,len(peers))
 	rf.matchIndex = make([]int,len(peers))
 	rf.applyCh = applyCh
-	rf.timer = time.NewTimer(time.Duration(rand.Int63() % 200 + 200) * time.Millisecond)
+	rf.timer = time.NewTimer(time.Duration(rand.Int63() % 200) * time.Millisecond)
 	rf.mu.Lock()
 	rf.readPersist(persister.ReadRaftState())
 	rf.mu.Unlock()
-	/*go func(){
-		for{
-			rf.ApplyStateMachine()
+
+	/*
+		一直产生阻塞的原因是因为channel发送消息时，由于节点状态改变无法再运行那个select代码块，
+		或者rpc返回消息时，channel接受了多个消息阻塞
+	 */
+	go func(){
+		for {
+			select {
+			case state := <- rf.stateChange:
+				//rf.mu.Lock()
+				if rf.state == leader && rf.state == candidate{
+					panic("invalid transition [leader -> candidate]")
+				}
+				if rf.state == follower && rf.state == leader {
+					panic("invalid transition [leader -> candidate]")
+				}
+				rf.ChangeState(state)
+				//rf.mu.Unlock()
+
+			case <- rf.timer.C:
+				rf.mu.Lock()
+				if rf.state == follower || rf.state == candidate {
+					rf.ChangeState(candidate)
+				}
+				rf.mu.Unlock()
+
+			}
 		}
-	}()*/
+	}()
 	/*go func(){
 		for{
 			var nowState state
@@ -1097,11 +1143,18 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			rf.mu.Unlock()
 
 			if nowState == candidate {
-				rf.StartLeaderElection()
+				 rf.LeaderElection()
+				//rf.StartLeaderElection()
 			} else if nowState == follower {
-				rf.StartFollower()
+				//rf.StartFollower()
 			} else if nowState == leader {
-				rf.StartAppendEntry()
+				//The tester requires that the leader send heartbeat RPCs
+				//no more than ten times per second.
+				// 心跳和日志同步如何分开
+				rf.SendAppendEntry()
+				select {
+					case <- time.After(80 * time.Millisecond):
+				}
 			}
 		}
 	}()
