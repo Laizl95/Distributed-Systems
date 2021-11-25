@@ -1,0 +1,42 @@
+
+1. 由于代码的结构问题
+    1.往channel发送消息会阻塞
+    2.往channel发送大量的消息造成阻塞
+解决办法：只有返回RPC消息时才处理channel的事情，RPC返回时注意过时RPC，注意当前节点的状态
+
+ channel的同步的问题
+   candidate -> follower
+   节点在处理某个节点发送的RPC消息时，转换为follower
+        如果这时候往channel发送消息
+            由于还没判断出该节点的状态，还没执行requestVote函数且不会再执行这个函数，因为节点状态已经改变，导致阻塞
+        如果不往channel发送消息
+            情况1：
+            还没判断出该节点的状态，该情况不会阻塞
+            情况2：
+            节点candidate已经给部分节点发送了RPC消息，注意这时该节点已经是follower
+                rpc返回消息，但是节点已经是follower，拒绝rpc消息,这样这个goroutine可能一直在candidate状态那，但是不影响raft的正确性
+                不判断节点的当前状态，在rpc返回时往channel发送数据，多次返回导致阻塞
+   注意：这时可能发生follower状态的节点一直在candidate requestvote那个函数中,不过没有影响
+
+   candidate -> candidate
+     只有时间片用尽才会转换，没什么问题
+
+   candidate -> leader
+     只能在rpc消息返回中处理，需要及时跳出select，需要一个channel通知，只在处理RPC消息时才改变，注意判断当前状态
+
+   follower -> candidate
+    只有时间片用尽才会转换，没什么问题
+
+   leader -> follower
+    在appendRPC中处理，发现问题及时发送消息到stopHeartBeat，此时以是follower，固定心跳时间片用完就能执行完append函数，不影响follower
+    没在rpc中处理，已经成为follower，等待时间片走完即可
+
+2. commitIndex applyIndex不需要持久化
+
+3. 处理rpc一定要考虑RPC延迟、失效的情况
+ voteFor!=candidateId需要这个条件，存在VoteRPC返回失败的情况
+
+4. goroutine数量超出限制，及时kill goroutine
+
+5. 活锁问题:no leader is being elected, or once a leader is elected, some other node starts an election
+   Figure 8 unreliable有时还是会失败
