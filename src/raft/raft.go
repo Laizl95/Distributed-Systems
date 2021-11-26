@@ -386,7 +386,6 @@ func (rf *Raft) AppendEntry(args *AppendEntryArgs,reply *AppendEntryReply) {
 			rf.persist()
 		}
 		reply.Term = rf.currentTerm
-		//rf.timer.Stop()
 		rf.ResetHeartBeatTimer()
 
 
@@ -549,6 +548,71 @@ func (rf *Raft) UpdateCommitIndex (log []Log) {
 	rf.mu.Unlock()
 
 }
+func (rf *Raft) WaitAppendEntry(i int,appendArgs *AppendEntryArgs,appendReply *AppendEntryReply) bool{
+	ok := rf.peers[i].Call("Raft.AppendEntry",appendArgs,&appendReply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if ok && rf.state == leader && rf.currentTerm == appendArgs.Term {
+		if appendReply.Term > rf.currentTerm {
+			rf.currentTerm = appendReply.Term
+			rf.state = follower
+			rf.voteFor = -1
+			rf.voteNum = 0
+			rf.ResetHeartBeatTimer()
+			rf.persist()
+		}else if appendReply.Term == rf.currentTerm {
+			//DPrintf("Reply LogIndex %d\n",append_reply.LogIndex)
+			/*
+				nextIndex[i]: leader当前需要同步follower i的日志索引
+				matchIndex[i]: leader当前确定已经同步的follower i的日志索引
+			*/
+			if !appendReply.Success {
+				/*
+					Figure8Unreliable2C测试出现了返回-1的情况。。。。
+					猜测是leader发送appendRPC给follower i，然后leader转换为follower
+					之后该节点再次成为leader，当时follower j返回的RPC信息这时才回到leader，接着便进入该段代码
+					需要判断返回的term
+				*/
+				DPrintf("Func SendAppendEntry AppendFail follower:%d matchIndex[%d]=%d LogIndex=%d",i,i,rf.matchIndex[i],
+					appendReply.LogIndex)
+				if rf.matchIndex[i] < appendReply.LogIndex  {
+					rf.nextIndex[i] = appendReply.LogIndex
+					if appendReply.ConflictTerm != -1 {
+						for j := appendReply.LogIndex-1; j > rf.matchIndex[i]; j-- {
+							if rf.log[j].Term == appendReply.ConflictTerm {
+								rf.nextIndex[i] = j
+							}
+						}
+					}
+				} else {
+					rf.nextIndex[i] = rf.matchIndex[i]
+				}
+				if rf.nextIndex[i] < 0 {
+					DPrintf("!!!nextIndex <0!!!!!\n")
+				}
+				//DPrintf("AppendFail FOLLOWER:%d matchIndex:%d",i,rf.matchIndex[i])
+			} else {
+				// 同上要注意'旧'的RPC
+				/*
+					update matchIndex to be prevLogIndex + len(entries[])
+				*/
+				DPrintf("Func SendAppendEntry AppendSuccess follower:%d matchIndex[%d]=%d LogIndex=%d",i,i,rf.matchIndex[i],
+					appendReply.LogIndex)
+				if rf.matchIndex[i] < appendReply.LogIndex-1 {
+					rf.matchIndex[i] = appendReply.LogIndex-1
+					rf.nextIndex[i] = appendReply.LogIndex
+				}
+				if rf.nextIndex[i] < 0 {
+					DPrintf("nextIndex <0!!!!!\n")
+				}
+				//DPrintf("AppendSuccess FOLLOWER:%d matchIndex:%d",i,rf.matchIndex[i])
+			}
+			//不能直接用rf.log更新
+			go rf.UpdateCommitIndex(appendArgs.Entries)
+		}
+	}
+	return ok
+}
 
 func(rf *Raft) SendAppendEntry() {
 
@@ -575,6 +639,7 @@ func(rf *Raft) SendAppendEntry() {
 				} else {
 					preTerm = rf.log[preId].Term
 				}
+
 				/*
 					panic: runtime error: index out of range [10] with length 6
 
@@ -608,7 +673,8 @@ func(rf *Raft) SendAppendEntry() {
 					ConflictTerm : -1,
 				}
 				rf.mu.Unlock()
-				ok := rf.peers[i].Call("Raft.AppendEntry",appendArgs,&appendReply)
+				go rf.WaitAppendEntry(i,appendArgs,&appendReply)
+				/*ok := rf.peers[i].Call("Raft.AppendEntry",appendArgs,&appendReply)
 				rf.mu.Lock()
 				if ok && rf.state == leader && rf.currentTerm == appendArgs.Term {
 					if appendReply.Term > rf.currentTerm {
@@ -623,38 +689,38 @@ func(rf *Raft) SendAppendEntry() {
 						/*
 							nextIndex[i]: leader当前需要同步follower i的日志索引
 							matchIndex[i]: leader当前确定已经同步的follower i的日志索引
-						*/
-						if !appendReply.Success {
-							/*
-								Figure8Unreliable2C测试出现了返回-1的情况。。。。
-								猜测是leader发送appendRPC给follower i，然后leader转换为follower
-								之后该节点再次成为leader，当时follower j返回的RPC信息这时才回到leader，接着便进入该段代码
-								需要判断返回的term
-							*/
-							DPrintf("Func SendAppendEntry AppendFail follower:%d matchIndex[%d]=%d LogIndex=%d",i,i,rf.matchIndex[i],
-								appendReply.LogIndex)
-							if rf.matchIndex[i] < appendReply.LogIndex  {
-								rf.nextIndex[i] = appendReply.LogIndex
-								if appendReply.ConflictTerm != -1 {
-									for j := appendReply.LogIndex-1; j > rf.matchIndex[i]; j-- {
-										if rf.log[j].Term == appendReply.ConflictTerm {
-											rf.nextIndex[i] = j
-										}
-									}
+				*/
+				//if !appendReply.Success {
+				/*
+					Figure8Unreliable2C测试出现了返回-1的情况。。。。
+					猜测是leader发送appendRPC给follower i，然后leader转换为follower
+					之后该节点再次成为leader，当时follower j返回的RPC信息这时才回到leader，接着便进入该段代码
+					需要判断返回的term
+				*/
+				/*DPrintf("Func SendAppendEntry AppendFail follower:%d matchIndex[%d]=%d LogIndex=%d",i,i,rf.matchIndex[i],
+						appendReply.LogIndex)
+					if rf.matchIndex[i] < appendReply.LogIndex  {
+						rf.nextIndex[i] = appendReply.LogIndex
+						if appendReply.ConflictTerm != -1 {
+							for j := appendReply.LogIndex-1; j > rf.matchIndex[i]; j-- {
+								if rf.log[j].Term == appendReply.ConflictTerm {
+									rf.nextIndex[i] = j
 								}
-							} else {
-								rf.nextIndex[i] = rf.matchIndex[i]
 							}
-							if rf.nextIndex[i] < 0 {
-								DPrintf("!!!nextIndex <0!!!!!\n")
-							}
-							//DPrintf("AppendFail FOLLOWER:%d matchIndex:%d",i,rf.matchIndex[i])
-						} else {
-							// 同上要注意'旧'的RPC
-							/*
-								update matchIndex to be prevLogIndex + len(entries[])
-							*/
-							DPrintf("Func SendAppendEntry AppendSuccess follower:%d matchIndex[%d]=%d LogIndex=%d",i,i,rf.matchIndex[i],
+						}
+					} else {
+						rf.nextIndex[i] = rf.matchIndex[i]
+					}
+					if rf.nextIndex[i] < 0 {
+						DPrintf("!!!nextIndex <0!!!!!\n")
+					}
+					//DPrintf("AppendFail FOLLOWER:%d matchIndex:%d",i,rf.matchIndex[i])
+				} else {
+					// 同上要注意'旧'的RPC
+					/*
+						update matchIndex to be prevLogIndex + len(entries[])
+				*/
+				/*DPrintf("Func SendAppendEntry AppendSuccess follower:%d matchIndex[%d]=%d LogIndex=%d",i,i,rf.matchIndex[i],
 								appendReply.LogIndex)
 							if rf.matchIndex[i] < appendReply.LogIndex-1 {
 								rf.matchIndex[i] = appendReply.LogIndex-1
@@ -669,7 +735,7 @@ func(rf *Raft) SendAppendEntry() {
 						go rf.UpdateCommitIndex(entries)
 					}
 				}
-				rf.mu.Unlock()
+				rf.mu.Unlock()*/
 			}(i)
 		}
 	}
@@ -740,7 +806,7 @@ func (rf *Raft)LeaderElection() {
 					VoteGranted: false,
 				}
 				rf.mu.Unlock()
-				rf.sendRequestVote(i,requestVote,requestReply)
+				go rf.sendRequestVote(i,requestVote,requestReply)
 			}(i)
 		}
 	}
@@ -804,7 +870,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 					rf.ResetSendHeartBeatTimer()
 					rf.SendAppendEntry()
 				}
-			}else {
+			} else {
 				if reply.Term > rf.currentTerm {
 					rf.currentTerm = reply.Term
 					rf.state = follower
@@ -1020,7 +1086,7 @@ func (rf *Raft) StartAppendEntry() {
 	}
 }
 
-func (rf *Raft) StartHeartBeat() {
+func (rf *Raft) StartHeratBeat() {
 	//DPrintf("id:"+strconv.Itoa(rf.me)+","+string(rf.state)+" currenterm"+strconv.Itoa(rf.currentTerm))
 	//The tester requires that the leader send heartbeat RPCs
 	//no more than ten times per second.
@@ -1118,13 +1184,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	go func() {
 		for {
-			/*DPrintf("\n")
-			DPrintf("%s %d CurrentTerm:%d CommitIndex:%d ",rf.state,rf.me,rf.currentTerm,rf.commitIndex)
-			for i:= range rf.log {
-				DPrintf("%s %d CurrentTerm:%d VoteFor %d \n LogId:%d LogCommand:%s LogTerm:%d",
-					rf.state,rf.me,rf.currentTerm,rf.voteFor,i+1,rf.log[i].Command,rf.log[i].Term)
-			}
-			DPrintf("\n")*/
+			/*
+				DPrintf("\n")
+				DPrintf("%s %d CurrentTerm:%d CommitIndex:%d ",rf.state,rf.me,rf.currentTerm,rf.commitIndex)
+				for i:= range rf.log {
+					DPrintf("%s %d CurrentTerm:%d VoteFor %d \n LogId:%d LogCommand:%s LogTerm:%d",
+						rf.state,rf.me,rf.currentTerm,rf.voteFor,i+1,rf.log[i].Command,rf.log[i].Term)
+				}
+				DPrintf("\n")
+			*/
 			var nowState state
 			rf.mu.Lock()
 			nowState = rf.state
