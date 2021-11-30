@@ -18,8 +18,8 @@ package raft
 //
 
 import (
-	"labgob"
-	"labrpc"
+	"Distributed-Systems-dec/src/labgob"
+	"Distributed-Systems-dec/src/labrpc"
 	"bytes"
 	"math/rand"
 	"strconv"
@@ -386,7 +386,7 @@ func (rf *Raft) AppendEntry(args *AppendEntryArgs,reply *AppendEntryReply) {
 			rf.persist()
 		}
 		reply.Term = rf.currentTerm
-		rf.ResetHeartBeatTimer()
+		defer rf.ResetHeartBeatTimer()
 
 
 		/*
@@ -533,6 +533,8 @@ func (rf *Raft) UpdateCommitIndex (log []Log) {
 					rf.commitIndex = i
 					break
 				}
+			} else if log[i].Term < rf.currentTerm {
+				break
 			}
 		}
 		DPrintf("Func UpdateCommitIndex LEADER:%d commitIndex=%d lastApplied=%d Loglen=%d",rf.me,rf.commitIndex,rf.lastApplied,
@@ -864,7 +866,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 				if rf.voteNum > len(rf.peers)/2 {
 					// 和607的情况类似
 					DPrintf("Success New Leader:%d\n",rf.me)
-					rf.changeLeader <- true
+					//rf.changeLeader <- true
+					//DPrintf("New Leader send channel****:%d\n",rf.me)
 					//rf.timer.Stop()
 					rf.ChangeState(leader)
 					rf.ResetSendHeartBeatTimer()
@@ -991,7 +994,7 @@ func (rf *Raft) ChangeState(s state) {
 func (rf *Raft) ResetElectionTimer() {
 	//d := time.Duration(rand.Int63() % 333 + 550) * time.Millisecond
 	//200 350
-	d := time.Duration(rand.Int63() % 200 + 200) * time.Millisecond
+	d := time.Duration(rand.Int63() % 250 + 200) * time.Millisecond
 	rf.timer.Reset(d)
 }
 func (rf *Raft) ResetHeartBeatTimer() {
@@ -1032,6 +1035,10 @@ func (rf *Raft) StartLeaderElection() {
 
 	case <- rf.timer.C:   //time.After(time.Duration(rand.Int63() % 333 + 550) * time.Millisecond):
 		rf.mu.Lock()
+		/*
+		   已经timelimit，成为了leader，发送changeleader信号
+		   select选择timelimit，无法再接收changeleader信，导致锁无法释放
+		*/
 		if rf.state == candidate || rf.state == follower {
 			rf.ChangeState(candidate)
 			rf.ResetElectionTimer()
@@ -1039,7 +1046,6 @@ func (rf *Raft) StartLeaderElection() {
 		rf.mu.Unlock()
 	}
 }
-
 
 func (rf *Raft) StartFollower() {
 	//DPrintf("id:"+strconv.Itoa(rf.me)+","+string(rf.state)+" currenterm"+strconv.Itoa(rf.currentTerm))
@@ -1081,6 +1087,8 @@ func (rf *Raft) StartAppendEntry() {
 		rf.mu.Lock()
 		if rf.state == leader {
 			rf.ResetSendHeartBeatTimer()
+		}else if rf.state == follower {
+			rf.ResetHeartBeatTimer()
 		}
 		rf.mu.Unlock()
 	}
@@ -1148,11 +1156,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	//rf.stateChange = make(chan state)
 	rf.stopHeartBeat = make(chan bool)
 	rf.changeLeader = make(chan bool)
+	rf.currentTerm = 0
+	rf.voteFor = -1
 	//rf.changeFollower = make(chan bool)
 	//rf.stopAppendEntry = make(chan bool)
 	rf.state = follower
-	rf.currentTerm = 0
-	rf.voteFor = -1
 	rf.log = append(rf.log,Log{"",-2})
 	rf.lastApplied = 0
 	rf.commitIndex = 0
@@ -1181,19 +1189,45 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			}
 		}
 	}()*/
-
 	go func() {
 		for {
-			/*
-				DPrintf("\n")
-				DPrintf("%s %d CurrentTerm:%d CommitIndex:%d ",rf.state,rf.me,rf.currentTerm,rf.commitIndex)
-				for i:= range rf.log {
-					DPrintf("%s %d CurrentTerm:%d VoteFor %d \n LogId:%d LogCommand:%s LogTerm:%d",
-						rf.state,rf.me,rf.currentTerm,rf.voteFor,i+1,rf.log[i].Command,rf.log[i].Term)
+			select {
+
+			//case <- rf.changeLeader:
+
+
+			case <- rf.timer.C:   //time.After(time.Duration(rand.Int63() % 333 + 550) * time.Millisecond):
+				rf.mu.Lock()
+				/*
+				   已经timelimit，成为了leader，发送changeleader信号
+				   select选择timelimit，无法再接收changeleader信，导致锁无法释放
+				*/
+				if rf.state == candidate || rf.state == follower {
+					rf.ChangeState(candidate)
+					rf.LeaderElection()
+					rf.ResetElectionTimer()
+					DPrintf("*****%s %d timeLimit!!!!! ",rf.state,rf.me)
+
+				}else if rf.state == leader {
+					rf.SendAppendEntry()
+					rf.ResetSendHeartBeatTimer()
 				}
-				DPrintf("\n")
-			*/
-			var nowState state
+				rf.mu.Unlock()
+			}
+		}
+	}()
+	/*go func() {
+	for {
+		/*
+		DPrintf("\n")
+		DPrintf("%s %d CurrentTerm:%d CommitIndex:%d ",rf.state,rf.me,rf.currentTerm,rf.commitIndex)
+		for i:= range rf.log {
+			DPrintf("%s %d CurrentTerm:%d VoteFor %d \n LogId:%d LogCommand:%s LogTerm:%d",
+				rf.state,rf.me,rf.currentTerm,rf.voteFor,i+1,rf.log[i].Command,rf.log[i].Term)
+		}
+		DPrintf("\n")
+	*/
+	/*var nowState state
 			rf.mu.Lock()
 			nowState = rf.state
 			rf.mu.Unlock()
@@ -1206,6 +1240,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				rf.StartAppendEntry()
 			}
 		}
-	}()
+	}()*/
 	return rf
 }

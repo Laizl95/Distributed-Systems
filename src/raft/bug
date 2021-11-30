@@ -40,3 +40,7 @@
 
 5. 活锁问题:no leader is being elected, or once a leader is elected, some other node starts an election
    Figure 8 unreliable有时还是会失败
+    投票的时候,候选节点超时
+       当选leader，发送channel，但是时间片可能已经超时了，导致程序阻塞
+
+以上问题已解决，测试脚本运行100次全部成功
