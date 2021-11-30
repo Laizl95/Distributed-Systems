@@ -18,8 +18,8 @@ package raft
 //
 
 import (
-	"Distributed-Systems-dec/src/labgob"
-	"Distributed-Systems-dec/src/labrpc"
+	"labgob"
+	"labrpc"
 	"bytes"
 	"math/rand"
 	"strconv"
