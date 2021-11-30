@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"context"
 	"labgob"
 	"labrpc"
 	"bytes"
@@ -48,6 +49,7 @@ type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
 	CommandIndex int
+	context.Context
 }
 
 type Log struct {
@@ -676,68 +678,6 @@ func(rf *Raft) SendAppendEntry() {
 				}
 				rf.mu.Unlock()
 				go rf.WaitAppendEntry(i,appendArgs,&appendReply)
-				/*ok := rf.peers[i].Call("Raft.AppendEntry",appendArgs,&appendReply)
-				rf.mu.Lock()
-				if ok && rf.state == leader && rf.currentTerm == appendArgs.Term {
-					if appendReply.Term > rf.currentTerm {
-						rf.currentTerm = appendReply.Term
-						rf.state = follower
-						rf.voteFor = -1
-						rf.voteNum = 0
-						rf.ResetHeartBeatTimer()
-						rf.persist()
-					}else if appendReply.Term == rf.currentTerm {
-						//DPrintf("Reply LogIndex %d\n",append_reply.LogIndex)
-						/*
-							nextIndex[i]: leader当前需要同步follower i的日志索引
-							matchIndex[i]: leader当前确定已经同步的follower i的日志索引
-				*/
-				//if !appendReply.Success {
-				/*
-					Figure8Unreliable2C测试出现了返回-1的情况。。。。
-					猜测是leader发送appendRPC给follower i，然后leader转换为follower
-					之后该节点再次成为leader，当时follower j返回的RPC信息这时才回到leader，接着便进入该段代码
-					需要判断返回的term
-				*/
-				/*DPrintf("Func SendAppendEntry AppendFail follower:%d matchIndex[%d]=%d LogIndex=%d",i,i,rf.matchIndex[i],
-						appendReply.LogIndex)
-					if rf.matchIndex[i] < appendReply.LogIndex  {
-						rf.nextIndex[i] = appendReply.LogIndex
-						if appendReply.ConflictTerm != -1 {
-							for j := appendReply.LogIndex-1; j > rf.matchIndex[i]; j-- {
-								if rf.log[j].Term == appendReply.ConflictTerm {
-									rf.nextIndex[i] = j
-								}
-							}
-						}
-					} else {
-						rf.nextIndex[i] = rf.matchIndex[i]
-					}
-					if rf.nextIndex[i] < 0 {
-						DPrintf("!!!nextIndex <0!!!!!\n")
-					}
-					//DPrintf("AppendFail FOLLOWER:%d matchIndex:%d",i,rf.matchIndex[i])
-				} else {
-					// 同上要注意'旧'的RPC
-					/*
-						update matchIndex to be prevLogIndex + len(entries[])
-				*/
-				/*DPrintf("Func SendAppendEntry AppendSuccess follower:%d matchIndex[%d]=%d LogIndex=%d",i,i,rf.matchIndex[i],
-								appendReply.LogIndex)
-							if rf.matchIndex[i] < appendReply.LogIndex-1 {
-								rf.matchIndex[i] = appendReply.LogIndex-1
-								rf.nextIndex[i] = appendReply.LogIndex
-							}
-							if rf.nextIndex[i] < 0 {
-								DPrintf("nextIndex <0!!!!!\n")
-							}
-							//DPrintf("AppendSuccess FOLLOWER:%d matchIndex:%d",i,rf.matchIndex[i])
-						}
-						//不能直接用rf.log更新
-						go rf.UpdateCommitIndex(entries)
-					}
-				}
-				rf.mu.Unlock()*/
 			}(i)
 		}
 	}
